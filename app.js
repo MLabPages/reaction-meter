@@ -879,20 +879,41 @@ function showDiagnosis() {
 }
 
 // ---------- データ回収（Google Apps Script 連携） ----------
+// ★ 既定の回収設定：ここに GAS の URL を書いておくと、素のURLを開くだけで
+//   送信設定が有効になる（リンクにパラメータを付ける必要がなくなる）
+const DEFAULT_COLLECTOR = {
+  url: "https://script.google.com/macros/s/AKfycbwzLD2yFSh2K37sUJKZ6S4HPAAPJjwJA9vAYq9Imh7VgBKP3vMo7zGuBpPDnh-4AHrUgQ/exec",
+  token: "",
+  autoSend: true,
+  sendTimeseries: true,
+};
+
+// ★ 短縮コード：?c=名前 で切り替えられる送信先プリセット。
+//   他の研究者が使う場合はここに1行追加して、?c=名前 の短いリンクを配布する
+const COLLECTOR_PRESETS = {
+  // 例) tanaka: { url: "https://script.google.com/macros/s/XXXX/exec", token: "", autoSend: true, sendTimeseries: false },
+};
+
 const COLLECTOR_KEY = "reactionMeterCollector";
-let collectorCfg = { url: "", token: "", autoSend: true, sendTimeseries: false };
+let collectorCfg = { ...DEFAULT_COLLECTOR };
 try {
   collectorCfg = { ...collectorCfg, ...JSON.parse(localStorage.getItem(COLLECTOR_KEY) || "{}") };
 } catch { /* 破損時は既定値のまま */ }
 
-// 設定込みリンク（?collector=…）で開かれた場合はその設定を取り込む
+// 設定込みリンク（?c=名前 または ?collector=…）で開かれた場合はその設定を取り込む
 (function readCollectorParams() {
   const qs = new URLSearchParams(location.search);
-  if (!qs.get("collector")) return;
-  collectorCfg.url = qs.get("collector");
-  collectorCfg.token = qs.get("token") || "";
-  collectorCfg.autoSend = qs.get("auto") !== "0";
-  collectorCfg.sendTimeseries = qs.get("ts") === "1";
+  const preset = COLLECTOR_PRESETS[qs.get("c")];
+  if (preset) {
+    collectorCfg = { ...collectorCfg, ...preset };
+  } else if (qs.get("collector")) {
+    collectorCfg.url = qs.get("collector");
+    collectorCfg.token = qs.get("token") || "";
+    collectorCfg.autoSend = qs.get("auto") !== "0";
+    collectorCfg.sendTimeseries = qs.get("ts") === "1";
+  } else {
+    return;
+  }
   persistCollector();
   // 長いURLパラメータをアドレスバーから消す（設定は保存済み）
   history.replaceState(null, "", location.pathname);
@@ -966,13 +987,28 @@ async function testCollector() {
   }
 }
 
+function sameCollectorCfg(a, b) {
+  return a.url === (b.url || "") &&
+    (a.token || "") === (b.token || "") &&
+    !!a.autoSend === !!b.autoSend &&
+    !!a.sendTimeseries === !!b.sendTimeseries;
+}
+
 function buildCollectorLink() {
   if (!collectorCfg.url) return null;
+  const base = `${location.origin}${location.pathname}`;
+  // 既定設定と同じなら素のURLでよい（アプリ側に埋め込み済みのため）
+  if (sameCollectorCfg(collectorCfg, DEFAULT_COLLECTOR)) return base;
+  // プリセットに一致すれば短縮コード形式
+  const key = Object.keys(COLLECTOR_PRESETS)
+    .find((k) => sameCollectorCfg(collectorCfg, COLLECTOR_PRESETS[k]));
+  if (key) return `${base}?c=${encodeURIComponent(key)}`;
+  // それ以外はフルパラメータ形式
   const params = new URLSearchParams({ collector: collectorCfg.url });
   if (collectorCfg.token) params.set("token", collectorCfg.token);
   if (collectorCfg.sendTimeseries) params.set("ts", "1");
   if (!collectorCfg.autoSend) params.set("auto", "0");
-  return `${location.origin}${location.pathname}?${params}`;
+  return `${base}?${params}`;
 }
 
 async function copyCollectorLink() {
