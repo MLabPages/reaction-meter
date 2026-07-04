@@ -60,6 +60,8 @@ const els = {
   btnCollectorSave: $("btnCollectorSave"), btnCollectorTest: $("btnCollectorTest"),
   btnCollectorLink: $("btnCollectorLink"), btnSendUnsent: $("btnSendUnsent"),
   collectorMsg: $("collectorMsg"),
+  btnQr: $("btnQr"), qrArea: $("qrArea"), qrImg: $("qrImg"),
+  btnShare: $("btnShare"), btnSessionsShare: $("btnSessionsShare"),
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -623,6 +625,7 @@ function startRecording() {
   els.btnMark.disabled = false;
   els.btnCsv.disabled = true;
   els.btnSummaryCsv.disabled = true;
+  els.btnShare.disabled = true;
   els.diagnosisPanel.classList.add("hidden");
   els.selfreportPanel.classList.add("hidden");
   setStatus("記録中：最初の2秒間は基準値の計測です。参加者は自然な姿勢でいてください。");
@@ -640,6 +643,7 @@ function stopRecording() {
   if (samples.length > 0) {
     els.btnCsv.disabled = false;
     els.btnSummaryCsv.disabled = false;
+    els.btnShare.disabled = false;
     showDiagnosis();
     lastSummary = summarize();
     if (lastSummary) els.selfreportPanel.classList.remove("hidden");
@@ -711,8 +715,7 @@ function addMarker() {
 }
 
 // ---------- CSV ----------
-function downloadCsv(filename, rows) {
-  if (!rows.length) return;
+function csvString(rows) {
   const headers = [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const esc = (v) => {
     const s = String(v ?? "");
@@ -723,7 +726,12 @@ function downloadCsv(filename, rows) {
     headers.join(",") +
     "\n" +
     rows.map((r) => headers.map((h) => esc(r[h])).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  return csv;
+}
+
+function downloadCsv(filename, rows) {
+  if (!rows.length) return;
+  const blob = new Blob([csvString(rows)], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -958,21 +966,76 @@ async function testCollector() {
   }
 }
 
-async function copyCollectorLink() {
-  if (!collectorCfg.url) {
-    collectorMsg("先に設定を保存してください", true);
-    return;
-  }
+function buildCollectorLink() {
+  if (!collectorCfg.url) return null;
   const params = new URLSearchParams({ collector: collectorCfg.url });
   if (collectorCfg.token) params.set("token", collectorCfg.token);
   if (collectorCfg.sendTimeseries) params.set("ts", "1");
   if (!collectorCfg.autoSend) params.set("auto", "0");
-  const link = `${location.origin}${location.pathname}?${params}`;
+  return `${location.origin}${location.pathname}?${params}`;
+}
+
+async function copyCollectorLink() {
+  const link = buildCollectorLink();
+  if (!link) {
+    collectorMsg("先に設定を保存してください", true);
+    return;
+  }
   try {
     await navigator.clipboard.writeText(link);
     collectorMsg("✅ リンクをコピーしました。協力者はこのリンクを開くだけで送信設定が完了します");
   } catch {
     collectorMsg(`コピーできませんでした。手動でコピーしてください: ${link}`, true);
+  }
+}
+
+// QRコード表示（設定込みリンクを埋め込む）
+function toggleQr() {
+  const showing = !els.qrArea.classList.contains("hidden");
+  if (showing) {
+    els.qrArea.classList.add("hidden");
+    els.btnQr.textContent = "🔳 QRコードを表示";
+    return;
+  }
+  const link = buildCollectorLink();
+  if (!link) {
+    collectorMsg("先に設定を保存してください", true);
+    return;
+  }
+  if (typeof qrcode === "undefined") {
+    collectorMsg("QRコードライブラリを読み込めませんでした。ネット接続を確認してください", true);
+    return;
+  }
+  try {
+    const qr = qrcode(0, "M"); // 0 = サイズ自動
+    qr.addData(link);
+    qr.make();
+    els.qrImg.src = qr.createDataURL(6, 8); // セルサイズ6px, 余白8セル
+    els.qrArea.classList.remove("hidden");
+    els.btnQr.textContent = "🔳 QRコードを隠す";
+  } catch (err) {
+    collectorMsg(`QRコードの生成に失敗しました: ${err.message}`, true);
+  }
+}
+
+// スマホの共有シート（Web Share API）でCSVファイルを送る
+async function shareCsvs(fileRows) {
+  const files = fileRows
+    .filter(([, rows]) => rows.length)
+    .map(([name, rows]) => new File([csvString(rows)], name, { type: "text/csv" }));
+  if (!files.length) {
+    setStatus("共有できるデータがありません", true);
+    return;
+  }
+  if (!navigator.canShare || !navigator.canShare({ files })) {
+    setStatus("この環境はファイル共有に対応していません（スマホのブラウザでお試しください）。CSVボタンからダウンロードできます", true);
+    return;
+  }
+  try {
+    await navigator.share({ files, title: "Reaction Meter データ" });
+    setStatus("共有しました");
+  } catch (err) {
+    if (err.name !== "AbortError") setStatus(`共有に失敗しました: ${err.message}`, true);
   }
 }
 
@@ -1268,7 +1331,17 @@ els.selY.addEventListener("change", renderCorrelation);
 els.btnCollectorSave.addEventListener("click", saveCollectorFromUI);
 els.btnCollectorTest.addEventListener("click", testCollector);
 els.btnCollectorLink.addEventListener("click", copyCollectorLink);
+els.btnQr.addEventListener("click", toggleQr);
 els.btnSendUnsent.addEventListener("click", sendUnsentSessions);
+els.btnShare.addEventListener("click", () => {
+  const s = summarize();
+  shareCsvs([
+    [fileStem() + "_timeseries.csv", samples],
+    [fileStem() + "_summary.csv", s ? [{ ...s, ...currentSelfreport() }] : []],
+  ]);
+});
+els.btnSessionsShare.addEventListener("click", () =>
+  shareCsvs([[`reaction_sessions_${new Date().toISOString().slice(0, 10)}.csv`, sessions]]));
 
 initCorrControls();
 renderSessions();
