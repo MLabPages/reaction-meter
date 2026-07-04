@@ -309,6 +309,21 @@ video, #overlay {
   gap: 14px;
   margin-bottom: 12px;
 }
+.qr-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.qr-area img {
+  background: #fff;
+  padding: 8px;
+  border-radius: 10px;
+  width: 220px;
+  height: 220px;
+  image-rendering: pixelated;
+}
 
 /* ---- self-report / sessions ---- */
 .small-note { font-size: .78rem; color: var(--muted); margin: 0 0 10px; }
