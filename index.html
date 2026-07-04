@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Reaction Meter — 身体反応計測ツール</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <div class="title-block">
+    <h1>Reaction Meter</h1>
+    <p class="subtitle">カメラで表情・姿勢・注視をリアルタイム計測（プレ調査 / コンセプトテスト用）</p>
+  </div>
+  <div class="privacy-badge" title="解析はすべてこの端末のブラウザ内で完結します">
+    🔒 映像は保存・送信されません（数値データのみ記録）
+  </div>
+</header>
+
+<main>
+  <!-- 左：カメラ映像 -->
+  <section class="panel video-panel">
+    <div class="video-wrap" id="videoWrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="videoPlaceholder" class="video-placeholder">
+        <p>「カメラ開始」を押してください</p>
+        <p class="small">初回はモデル読み込みに数秒かかります</p>
+      </div>
+      <div id="recBadge" class="rec-badge hidden">● REC <span id="recTime">00:00</span></div>
+      <div id="calibBadge" class="calib-badge hidden">基準値を計測中…</div>
+    </div>
+    <div class="video-controls">
+      <button id="btnCamera" class="btn primary">カメラ開始</button>
+      <button id="btnFacing" class="btn" disabled>🔄 前面 / 背面</button>
+      <label class="toggle"><input type="checkbox" id="chkOverlay" checked> ランドマーク表示</label>
+      <label class="toggle"><input type="checkbox" id="chkMirror" checked> ミラー表示</label>
+    </div>
+    <div id="status" class="status"></div>
+  </section>
+
+  <!-- 右：リアルタイム指標 -->
+  <section class="panel metrics-panel">
+    <h2>リアルタイム指標</h2>
+
+    <div class="metric-row">
+      <span class="metric-label">😊 笑顔（ポジティブ）</span>
+      <div class="bar"><div class="bar-fill green" id="barSmile"></div></div>
+      <span class="metric-val" id="valSmile">–</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">😟 眉間のしわ（困惑・不快）</span>
+      <div class="bar"><div class="bar-fill red" id="barFurrow"></div></div>
+      <span class="metric-val" id="valFurrow">–</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">😮 眉上げ（驚き・興味）</span>
+      <div class="bar"><div class="bar-fill blue" id="barRaise"></div></div>
+      <span class="metric-val" id="valRaise">–</span>
+    </div>
+    <div class="metric-row">
+      <span class="metric-label">👀 目の開き</span>
+      <div class="bar"><div class="bar-fill blue" id="barEye"></div></div>
+      <span class="metric-val" id="valEye">–</span>
+    </div>
+
+    <div class="gauge-grid">
+      <div class="gauge-card">
+        <div class="gauge-title">感情価（valence）</div>
+        <div class="valence-bar">
+          <div class="valence-center"></div>
+          <div class="valence-fill" id="valenceFill"></div>
+        </div>
+        <div class="gauge-value" id="valValence">–</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-title">エンゲージメント</div>
+        <div class="big-num" id="valEngage">–</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-title">注視</div>
+        <div class="big-num" id="valAttention">–</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-title">姿勢スコア</div>
+        <div class="big-num" id="valPosture">–</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-title">まばたき回数</div>
+        <div class="big-num" id="valBlink">0</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-title">前のめり度</div>
+        <div class="big-num" id="valLean">–</div>
+      </div>
+      <div class="gauge-card">
+        <div class="gauge-title">視線ゾーン</div>
+        <div class="big-num" id="valGazeZone">–</div>
+      </div>
+    </div>
+
+    <h3>推移（直近60秒）　<span class="legend"><span class="lg green">■</span>感情価　<span class="lg blue">■</span>エンゲージメント</span></h3>
+    <canvas id="chart" height="90"></canvas>
+
+    <h3 class="details-toggle">
+      <label class="toggle"><input type="checkbox" id="chkDetails"> 詳細指標を表示（研究者向けオプション）</label>
+    </h3>
+    <div id="detailsSection" class="hidden">
+      <div class="metric-row">
+        <span class="metric-label">😊 本物の笑顔（目元も笑う）</span>
+        <div class="bar"><div class="bar-fill green" id="barDuchenne"></div></div>
+        <span class="metric-val" id="valDuchenne">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">😬 口の引き締め（緊張・抑制）</span>
+        <div class="bar"><div class="bar-fill red" id="barLipPress"></div></div>
+        <span class="metric-val" id="valLipPress">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">🤢 鼻のしわ（嫌悪）</span>
+        <div class="bar"><div class="bar-fill red" id="barSneer"></div></div>
+        <span class="metric-val" id="valSneer">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">🤔 口すぼめ（懐疑・熟考）</span>
+        <div class="bar"><div class="bar-fill blue" id="barPucker"></div></div>
+        <span class="metric-val" id="valPucker">–</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">🌀 落ち着きのなさ（頭の動き）</span>
+        <div class="bar"><div class="bar-fill red" id="barMove"></div></div>
+        <span class="metric-val" id="valMove">–</span>
+      </div>
+      <div class="details-bottom">
+        <div class="gaze-wrap">
+          <div class="gauge-title">視線マップ（滞留・参加者視点）</div>
+          <div class="gaze-grid" id="gazeGrid">
+            <div class="gaze-cell" data-zone="left-up"></div>
+            <div class="gaze-cell" data-zone="center-up"></div>
+            <div class="gaze-cell" data-zone="right-up"></div>
+            <div class="gaze-cell" data-zone="left-middle"></div>
+            <div class="gaze-cell" data-zone="center-middle"></div>
+            <div class="gaze-cell" data-zone="right-middle"></div>
+            <div class="gaze-cell" data-zone="left-down"></div>
+            <div class="gaze-cell" data-zone="center-down"></div>
+            <div class="gaze-cell" data-zone="right-down"></div>
+          </div>
+        </div>
+        <div class="gauge-card"><div class="gauge-title">うなずき</div><div class="big-num" id="valNod">0</div></div>
+        <div class="gauge-card"><div class="gauge-title">首振り</div><div class="big-num" id="valShake">0</div></div>
+        <div class="gauge-card"><div class="gauge-title">顔タッチ</div><div class="big-num" id="valTouch">–</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- 記録コントロール -->
+<section class="panel record-panel">
+  <div class="record-inputs">
+    <label>参加者ID <input type="text" id="inpParticipant" placeholder="P01"></label>
+    <label>刺激ラベル <input type="text" id="inpStimulus" placeholder="コンセプトA"></label>
+  </div>
+  <div class="record-buttons">
+    <button id="btnRecord" class="btn primary big" disabled>⏺ 記録開始</button>
+    <button id="btnMark" class="btn big" disabled>🚩 マーク</button>
+    <button id="btnCsv" class="btn big" disabled>⬇ CSV（時系列）</button>
+    <button id="btnSummaryCsv" class="btn big" disabled>⬇ CSV（サマリー）</button>
+  </div>
+</section>
+
+<!-- 診断結果 -->
+<section class="panel diagnosis-panel hidden" id="diagnosisPanel">
+  <h2>簡易診断</h2>
+  <div id="diagnosisBody"></div>
+  <p class="caveat">※ 本診断はカメラ映像からの推定に基づく<strong>探索的な参考値</strong>です。照明・カメラ角度・個人差の影響を受けるため、本調査では自己報告等の他の指標と併用してください。</p>
+</section>
+
+<!-- 自己報告尺度の入力 -->
+<section class="panel selfreport-panel hidden" id="selfreportPanel">
+  <h2>自己報告尺度の入力</h2>
+  <p class="small-note">参加者の下位尺度得点（例：1–7件法の項目平均）を入力して保存すると、身体反応との関連を分析できます。データはこの端末のブラウザ内にのみ保存されます。</p>
+  <div class="selfreport-inputs">
+    <label>自動性 <input type="number" id="inpAuto" step="0.1" placeholder="例 4.5"></label>
+    <label>活性 <input type="number" id="inpActive" step="0.1" placeholder="例 5.0"></label>
+    <label>安定 <input type="number" id="inpStable" step="0.1" placeholder="例 3.8"></label>
+    <button id="btnSaveSession" class="btn primary big">💾 セッションを保存</button>
+  </div>
+</section>
+
+<!-- セッション一覧と相関 -->
+<section class="panel sessions-panel hidden" id="sessionsPanel">
+  <h2>保存済みセッション（<span id="sessionCount">0</span> 件）</h2>
+  <div class="sessions-table-wrap">
+    <table class="sessions-table" id="sessionsTable"></table>
+  </div>
+  <div class="record-buttons">
+    <button id="btnSessionsCsv" class="btn">⬇ 全セッションCSV（分析用）</button>
+    <button id="btnClearSessions" class="btn danger">🗑 全セッション削除</button>
+  </div>
+
+  <h3>身体反応 × 自己報告の相関</h3>
+  <div class="corr-controls">
+    <label>身体反応（X軸） <select id="selX"></select></label>
+    <label>自己報告（Y軸） <select id="selY"></select></label>
+  </div>
+  <div class="corr-result" id="corrResult"></div>
+  <canvas id="scatter" width="420" height="260"></canvas>
+</section>
+
+<footer>
+  <p>解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみです。</p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
