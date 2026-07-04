@@ -950,6 +950,15 @@ function saveCollectorFromUI() {
   collectorMsg(collectorCfg.url ? "設定を保存しました" : "URLが空のため、送信は無効です");
 }
 
+// 回収側（GAS）からの応答を日本語にする
+const REASON_JA = {
+  unauthorized: "トークン不一致：送信先GASの合言葉とアプリ側のトークンが一致していません",
+  "no rows": "送信データが空でした",
+  "missing body": "送信内容が空でした",
+  error: "受信側（スプレッドシート）でエラーが発生しました",
+};
+const reasonJa = (r) => REASON_JA[r] || r;
+
 // GAS へ JSON を POST する。Content-Type を付けないことで CORS プリフライトを回避
 async function sendToCollector(kind, rows) {
   if (!collectorCfg.url) return { ok: false, reason: "未設定" };
@@ -1090,7 +1099,7 @@ async function sendUnsentSessions() {
     renderSessions();
     collectorMsg(`✅ ${unsent.length} 件を送信しました`);
   } else {
-    collectorMsg(`❌ 送信に失敗しました（${result.reason}）。データは端末に残っています`, true);
+    collectorMsg(`❌ 送信に失敗しました（${reasonJa(result.reason)}）。データは端末に残っています`, true);
   }
 }
 
@@ -1167,7 +1176,7 @@ async function saveSession() {
       renderSessions();
       setStatus(`✅ 保存・送信が完了しました${tsNote}`);
     } else {
-      setStatus(`保存しました（送信は失敗: ${result.reason}）。「未送信セッションを送信」で再試行するか、CSVをダウンロードしてください`, true);
+      setStatus(`保存しました（送信は失敗: ${reasonJa(result.reason)}）。「未送信セッションを送信」で再試行するか、CSVをダウンロードしてください`, true);
     }
   }
 }
