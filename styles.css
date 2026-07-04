@@ -246,6 +246,21 @@ video, #overlay {
 
 /* ---- record ---- */
 .record-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.dest-badge {
+  flex-basis: 100%;
+  font-size: .8rem;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  width: fit-content;
+}
+.dest-badge.configured {
+  color: #7fe0a7;
+  background: #12301f;
+  border-color: #1f5c39;
+}
 .record-inputs { display: flex; flex-wrap: wrap; gap: 12px; }
 .record-inputs label { font-size: .8rem; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
 .record-inputs input {
