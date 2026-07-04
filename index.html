@@ -175,6 +175,35 @@
   <p class="caveat">※ 本診断はカメラ映像からの推定に基づく<strong>探索的な参考値</strong>です。照明・カメラ角度・個人差の影響を受けるため、本調査では自己報告等の他の指標と併用してください。</p>
 </section>
 
+<!-- データ回収設定 -->
+<section class="panel collector-panel">
+  <details id="collectorDetails">
+    <summary>📤 データ回収設定 <span id="collectorState" class="collector-state">未設定</span></summary>
+    <p class="small-note">
+      Google Apps Script の回収用WebアプリのURL（作り方はREADME参照）を設定すると、セッション保存時に数値データが研究者のGoogleスプレッドシートへ自動送信されます。協力者の端末にCSVを残す必要がなくなります。<strong>映像が送信されることはありません。</strong>
+    </p>
+    <div class="collector-inputs">
+      <label>送信先URL
+        <input type="url" id="inpCollectorUrl" placeholder="https://script.google.com/macros/s/…/exec">
+      </label>
+      <label>トークン（任意・回収側の設定と一致させる）
+        <input type="text" id="inpCollectorToken" placeholder="空欄可">
+      </label>
+    </div>
+    <div class="collector-opts">
+      <label class="toggle"><input type="checkbox" id="chkAutoSend" checked> セッション保存時に自動送信</label>
+      <label class="toggle"><input type="checkbox" id="chkSendTs"> 時系列データも送信（データ量が多くなります）</label>
+    </div>
+    <div class="record-buttons">
+      <button id="btnCollectorSave" class="btn primary">設定を保存</button>
+      <button id="btnCollectorTest" class="btn">接続テスト</button>
+      <button id="btnCollectorLink" class="btn">📋 設定込みリンクをコピー</button>
+      <button id="btnSendUnsent" class="btn">未送信セッションを送信</button>
+    </div>
+    <div id="collectorMsg" class="status"></div>
+  </details>
+</section>
+
 <!-- 自己報告尺度の入力 -->
 <section class="panel selfreport-panel hidden" id="selfreportPanel">
   <h2>自己報告尺度の入力</h2>
@@ -208,7 +237,7 @@
 </section>
 
 <footer>
-  <p>解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみです。</p>
+  <p>解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみで、データ回収が設定されている場合はその数値のみが研究者のスプレッドシートに送信されます。</p>
 </footer>
 
 <script type="module" src="app.js"></script>

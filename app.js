@@ -54,6 +54,12 @@ const els = {
   btnSessionsCsv: $("btnSessionsCsv"), btnClearSessions: $("btnClearSessions"),
   selX: $("selX"), selY: $("selY"),
   corrResult: $("corrResult"), scatter: $("scatter"),
+  collectorDetails: $("collectorDetails"), collectorState: $("collectorState"),
+  inpCollectorUrl: $("inpCollectorUrl"), inpCollectorToken: $("inpCollectorToken"),
+  chkAutoSend: $("chkAutoSend"), chkSendTs: $("chkSendTs"),
+  btnCollectorSave: $("btnCollectorSave"), btnCollectorTest: $("btnCollectorTest"),
+  btnCollectorLink: $("btnCollectorLink"), btnSendUnsent: $("btnSendUnsent"),
+  collectorMsg: $("collectorMsg"),
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -864,6 +870,131 @@ function showDiagnosis() {
   els.diagnosisPanel.classList.remove("hidden");
 }
 
+// ---------- データ回収（Google Apps Script 連携） ----------
+const COLLECTOR_KEY = "reactionMeterCollector";
+let collectorCfg = { url: "", token: "", autoSend: true, sendTimeseries: false };
+try {
+  collectorCfg = { ...collectorCfg, ...JSON.parse(localStorage.getItem(COLLECTOR_KEY) || "{}") };
+} catch { /* 破損時は既定値のまま */ }
+
+// 設定込みリンク（?collector=…）で開かれた場合はその設定を取り込む
+(function readCollectorParams() {
+  const qs = new URLSearchParams(location.search);
+  if (!qs.get("collector")) return;
+  collectorCfg.url = qs.get("collector");
+  collectorCfg.token = qs.get("token") || "";
+  collectorCfg.autoSend = qs.get("auto") !== "0";
+  collectorCfg.sendTimeseries = qs.get("ts") === "1";
+  persistCollector();
+  // 長いURLパラメータをアドレスバーから消す（設定は保存済み）
+  history.replaceState(null, "", location.pathname);
+})();
+
+function persistCollector() {
+  try {
+    localStorage.setItem(COLLECTOR_KEY, JSON.stringify(collectorCfg));
+  } catch { /* localStorage が使えない環境では毎回入力してもらう */ }
+}
+
+function collectorMsg(msg, isError = false) {
+  els.collectorMsg.textContent = msg;
+  els.collectorMsg.classList.toggle("error", isError);
+}
+
+function applyCollectorToUI() {
+  els.inpCollectorUrl.value = collectorCfg.url;
+  els.inpCollectorToken.value = collectorCfg.token;
+  els.chkAutoSend.checked = collectorCfg.autoSend;
+  els.chkSendTs.checked = collectorCfg.sendTimeseries;
+  const on = !!collectorCfg.url;
+  els.collectorState.textContent = on ? "設定済み" : "未設定";
+  els.collectorState.classList.toggle("configured", on);
+}
+
+function saveCollectorFromUI() {
+  collectorCfg.url = els.inpCollectorUrl.value.trim();
+  collectorCfg.token = els.inpCollectorToken.value.trim();
+  collectorCfg.autoSend = els.chkAutoSend.checked;
+  collectorCfg.sendTimeseries = els.chkSendTs.checked;
+  persistCollector();
+  applyCollectorToUI();
+  collectorMsg(collectorCfg.url ? "設定を保存しました" : "URLが空のため、送信は無効です");
+}
+
+// GAS へ JSON を POST する。Content-Type を付けないことで CORS プリフライトを回避
+async function sendToCollector(kind, rows) {
+  if (!collectorCfg.url) return { ok: false, reason: "未設定" };
+  if (!rows.length) return { ok: false, reason: "データなし" };
+  try {
+    const res = await fetch(collectorCfg.url, {
+      method: "POST",
+      body: JSON.stringify({
+        collectorToken: collectorCfg.token || undefined,
+        kind,
+        fileName: fileStem(),
+        rows,
+      }),
+    });
+    const text = (await res.text()).trim();
+    return { ok: text === "ok", reason: text };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+async function testCollector() {
+  if (!els.inpCollectorUrl.value.trim()) {
+    collectorMsg("送信先URLを入力してください", true);
+    return;
+  }
+  collectorMsg("接続テスト中…");
+  try {
+    const res = await fetch(els.inpCollectorUrl.value.trim());
+    const text = await res.text();
+    if (text.includes("running")) collectorMsg("✅ 接続OK：回収用Webアプリが応答しました");
+    else collectorMsg(`応答はありましたが内容が想定と異なります: ${text.slice(0, 80)}`, true);
+  } catch (err) {
+    collectorMsg(`❌ 接続できませんでした: ${err.message}`, true);
+  }
+}
+
+async function copyCollectorLink() {
+  if (!collectorCfg.url) {
+    collectorMsg("先に設定を保存してください", true);
+    return;
+  }
+  const params = new URLSearchParams({ collector: collectorCfg.url });
+  if (collectorCfg.token) params.set("token", collectorCfg.token);
+  if (collectorCfg.sendTimeseries) params.set("ts", "1");
+  if (!collectorCfg.autoSend) params.set("auto", "0");
+  const link = `${location.origin}${location.pathname}?${params}`;
+  try {
+    await navigator.clipboard.writeText(link);
+    collectorMsg("✅ リンクをコピーしました。協力者はこのリンクを開くだけで送信設定が完了します");
+  } catch {
+    collectorMsg(`コピーできませんでした。手動でコピーしてください: ${link}`, true);
+  }
+}
+
+async function sendUnsentSessions() {
+  const unsent = sessions.filter((s) => !s.sent_at);
+  if (!unsent.length) {
+    collectorMsg("未送信のセッションはありません");
+    return;
+  }
+  collectorMsg(`${unsent.length} 件を送信中…`);
+  const result = await sendToCollector("summary", unsent);
+  if (result.ok) {
+    const at = new Date().toISOString();
+    unsent.forEach((s) => (s.sent_at = at));
+    persistSessions();
+    renderSessions();
+    collectorMsg(`✅ ${unsent.length} 件を送信しました`);
+  } else {
+    collectorMsg(`❌ 送信に失敗しました（${result.reason}）。データは端末に残っています`, true);
+  }
+}
+
 // ---------- セッション保存と自己報告尺度との関連 ----------
 const SESSIONS_KEY = "reactionMeterSessions";
 let sessions = [];
@@ -906,20 +1037,40 @@ function currentSelfreport() {
   };
 }
 
-function saveSession() {
+async function saveSession() {
   if (!lastSummary) return;
   const sr = currentSelfreport();
   if (Object.values(sr).every((v) => v == null) &&
       !confirm("尺度得点が未入力です。保存後でもセッション一覧の表に直接入力できます。このまま保存しますか？")) {
     return;
   }
-  sessions.push({ ...lastSummary, ...sr, saved_at: new Date().toISOString() });
+  const session = { ...lastSummary, ...sr, saved_at: new Date().toISOString() };
+  sessions.push(session);
   persistSessions();
   els.inpAuto.value = els.inpActive.value = els.inpStable.value = "";
   els.selfreportPanel.classList.add("hidden");
   lastSummary = null;
   setStatus(`セッションを保存しました（計 ${sessions.length} 件）`);
   renderSessions();
+
+  // 回収先が設定されていれば自動送信（時系列は今回の記録がメモリに残っているうちに送る）
+  if (collectorCfg.url && collectorCfg.autoSend) {
+    setStatus("セッションを保存し、データを送信中…");
+    const result = await sendToCollector("summary", [session]);
+    let tsNote = "";
+    if (collectorCfg.sendTimeseries && samples.length) {
+      const tsResult = await sendToCollector("timeseries", samples);
+      tsNote = tsResult.ok ? "（時系列も送信済み）" : "（時系列の送信は失敗）";
+    }
+    if (result.ok) {
+      session.sent_at = new Date().toISOString();
+      persistSessions();
+      renderSessions();
+      setStatus(`✅ 保存・送信が完了しました${tsNote}`);
+    } else {
+      setStatus(`保存しました（送信は失敗: ${result.reason}）。「未送信セッションを送信」で再試行するか、CSVをダウンロードしてください`, true);
+    }
+  }
 }
 
 function persistSessions() {
@@ -947,7 +1098,7 @@ function renderSessions() {
     `<td><input type="number" step="0.1" class="score-input" data-i="${i}" data-key="${key}"` +
     ` value="${typeof v === "number" ? v : ""}" placeholder="–"></td>`;
   els.sessionsTable.innerHTML =
-    "<tr><th>参加者</th><th>刺激</th><th>日時</th><th>ｴﾝｹﾞｰｼﾞ</th><th>感情価</th><th>注視率</th><th>自動性</th><th>活性</th><th>安定</th><th></th></tr>" +
+    "<tr><th>参加者</th><th>刺激</th><th>日時</th><th>ｴﾝｹﾞｰｼﾞ</th><th>感情価</th><th>注視率</th><th>自動性</th><th>活性</th><th>安定</th><th>送信</th><th></th></tr>" +
     sessions.map((s, i) =>
       `<tr><td>${escapeHtml(s.participant_id) || "–"}</td>` +
       `<td>${escapeHtml(s.stimulus_label) || "–"}</td>` +
@@ -956,6 +1107,7 @@ function renderSessions() {
       scoreCell(i, "selfreport_automaticity", s.selfreport_automaticity) +
       scoreCell(i, "selfreport_activation", s.selfreport_activation) +
       scoreCell(i, "selfreport_stability", s.selfreport_stability) +
+      `<td title="${s.sent_at ? "送信済み: " + s.sent_at : "未送信"}">${s.sent_at ? "✓" : "–"}</td>` +
       `<td><button class="del-btn" data-i="${i}" title="このセッションを削除">✕</button></td></tr>`
     ).join("");
   renderCorrelation();
@@ -1089,12 +1241,18 @@ els.sessionsTable.addEventListener("click", (e) => {
 // 一覧の尺度得点セルを編集したらその場で保存して相関を更新
 els.sessionsTable.addEventListener("change", (e) => {
   const inp = e.target.closest(".score-input");
-  if (!inp || !sessions[Number(inp.dataset.i)]) return;
-  sessions[Number(inp.dataset.i)][inp.dataset.key] =
-    inp.value === "" ? null : Number(inp.value);
+  const s = sessions[Number(inp?.dataset.i)];
+  if (!inp || !s) return;
+  s[inp.dataset.key] = inp.value === "" ? null : Number(inp.value);
+  // 送信済みだった場合は「未送信」に戻し、修正値を再送できるようにする
+  // （再送すると回収シートには新旧2行が残るので、saved_at で新しい方を採用する）
+  const wasSent = !!s.sent_at;
+  s.sent_at = null;
   persistSessions();
   renderCorrelation();
-  setStatus("尺度得点を更新しました");
+  setStatus(wasSent
+    ? "尺度得点を更新しました（未送信に戻しました。「未送信セッションを送信」で再送できます）"
+    : "尺度得点を更新しました");
 });
 els.btnSessionsCsv.addEventListener("click", () =>
   downloadCsv(`reaction_sessions_${new Date().toISOString().slice(0, 10)}.csv`, sessions));
@@ -1107,9 +1265,14 @@ els.btnClearSessions.addEventListener("click", () => {
 });
 els.selX.addEventListener("change", renderCorrelation);
 els.selY.addEventListener("change", renderCorrelation);
+els.btnCollectorSave.addEventListener("click", saveCollectorFromUI);
+els.btnCollectorTest.addEventListener("click", testCollector);
+els.btnCollectorLink.addEventListener("click", copyCollectorLink);
+els.btnSendUnsent.addEventListener("click", sendUnsentSessions);
 
 initCorrControls();
 renderSessions();
+applyCollectorToUI();
 applyMirror();
 if (!navigator.mediaDevices?.getUserMedia) {
   setStatus("このブラウザはカメラAPIに対応していません。HTTPS（または localhost）でアクセスしているか確認してください。", true);
