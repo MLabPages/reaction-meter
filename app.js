@@ -28,6 +28,7 @@ const els = {
   chkOverlay: $("chkOverlay"), chkMirror: $("chkMirror"),
   btnRecord: $("btnRecord"), btnMark: $("btnMark"),
   btnCsv: $("btnCsv"), btnSummaryCsv: $("btnSummaryCsv"),
+  inpStudy: $("inpStudy"),
   inpParticipant: $("inpParticipant"), inpStimulus: $("inpStimulus"),
   barSmile: $("barSmile"), valSmile: $("valSmile"),
   barFurrow: $("barFurrow"), valFurrow: $("valFurrow"),
@@ -661,6 +662,7 @@ function updateRecTimer(now) {
 
 function pushSample(m, now) {
   samples.push({
+    study_id: els.inpStudy.value.trim() || "",
     participant_id: els.inpParticipant.value || "",
     stimulus_label: els.inpStimulus.value || "",
     iso_time: new Date().toISOString(),
@@ -740,10 +742,11 @@ function downloadCsv(filename, rows) {
 }
 
 function fileStem() {
+  const study = els.inpStudy.value.trim();
   const p = els.inpParticipant.value || "anon";
   const s = els.inpStimulus.value || "stim";
   const t = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-  return `reaction_${p}_${s}_${t}`;
+  return `reaction_${study ? study + "_" : ""}${p}_${s}_${t}`;
 }
 
 // ---------- サマリー・診断 ----------
@@ -777,6 +780,7 @@ function summarize() {
     : null;
 
   return {
+    study_id: last.study_id,
     participant_id: last.participant_id,
     stimulus_label: last.stimulus_label,
     duration_sec: Math.round((all.at(-1).elapsed_ms - all[0].elapsed_ms) / 1000),
@@ -900,20 +904,33 @@ try {
   collectorCfg = { ...collectorCfg, ...JSON.parse(localStorage.getItem(COLLECTOR_KEY) || "{}") };
 } catch { /* 破損時は既定値のまま */ }
 
-// 設定込みリンク（?c=名前 または ?collector=…）で開かれた場合はその設定を取り込む
+// 調査ID：リンクの ?study=… で配布でき、全データに study_id 列として記録される
+const STUDY_KEY = "reactionMeterStudy";
+
+// 設定込みリンク（?c=名前 / ?collector=… / ?study=…）で開かれた場合はその設定を取り込む
 (function readCollectorParams() {
   const qs = new URLSearchParams(location.search);
+  let consumed = false;
+
+  const study = qs.get("study");
+  if (study != null) {
+    try { localStorage.setItem(STUDY_KEY, study); } catch { /* 保存不可でも入力欄には反映される */ }
+    consumed = true;
+  }
+
   const preset = COLLECTOR_PRESETS[qs.get("c")];
   if (preset) {
     collectorCfg = { ...collectorCfg, ...preset };
+    consumed = true;
   } else if (qs.get("collector")) {
     collectorCfg.url = qs.get("collector");
     collectorCfg.token = qs.get("token") || "";
     collectorCfg.autoSend = qs.get("auto") !== "0";
     collectorCfg.sendTimeseries = qs.get("ts") === "1";
-  } else {
-    return;
+    consumed = true;
   }
+
+  if (!consumed) return;
   persistCollector();
   // 長いURLパラメータをアドレスバーから消す（設定は保存済み）
   history.replaceState(null, "", location.pathname);
@@ -1006,18 +1023,33 @@ function sameCollectorCfg(a, b) {
 function buildCollectorLink() {
   if (!collectorCfg.url) return null;
   const base = `${location.origin}${location.pathname}`;
+  let link;
   // 既定設定と同じなら素のURLでよい（アプリ側に埋め込み済みのため）
-  if (sameCollectorCfg(collectorCfg, DEFAULT_COLLECTOR)) return base;
-  // プリセットに一致すれば短縮コード形式
-  const key = Object.keys(COLLECTOR_PRESETS)
-    .find((k) => sameCollectorCfg(collectorCfg, COLLECTOR_PRESETS[k]));
-  if (key) return `${base}?c=${encodeURIComponent(key)}`;
-  // それ以外はフルパラメータ形式
-  const params = new URLSearchParams({ collector: collectorCfg.url });
-  if (collectorCfg.token) params.set("token", collectorCfg.token);
-  if (collectorCfg.sendTimeseries) params.set("ts", "1");
-  if (!collectorCfg.autoSend) params.set("auto", "0");
-  return `${base}?${params}`;
+  if (sameCollectorCfg(collectorCfg, DEFAULT_COLLECTOR)) {
+    link = base;
+  } else {
+    // プリセットに一致すれば短縮コード形式
+    const key = Object.keys(COLLECTOR_PRESETS)
+      .find((k) => sameCollectorCfg(collectorCfg, COLLECTOR_PRESETS[k]));
+    if (key) {
+      link = `${base}?c=${encodeURIComponent(key)}`;
+    } else {
+      // それ以外はフルパラメータ形式
+      const params = new URLSearchParams({ collector: collectorCfg.url });
+      if (collectorCfg.token) params.set("token", collectorCfg.token);
+      if (collectorCfg.sendTimeseries) params.set("ts", "1");
+      if (!collectorCfg.autoSend) params.set("auto", "0");
+      link = `${base}?${params}`;
+    }
+  }
+  // 調査IDが入力されていればリンクに埋め込む（開いた端末に自動設定される）
+  const study = els.inpStudy.value.trim();
+  if (study) {
+    const u = new URL(link);
+    u.searchParams.set("study", study);
+    link = u.toString();
+  }
+  return link;
 }
 
 async function copyCollectorLink() {
@@ -1206,9 +1238,10 @@ function renderSessions() {
     `<td><input type="number" step="0.1" class="score-input" data-i="${i}" data-key="${key}"` +
     ` value="${typeof v === "number" ? v : ""}" placeholder="–"></td>`;
   els.sessionsTable.innerHTML =
-    "<tr><th>参加者</th><th>刺激</th><th>日時</th><th>ｴﾝｹﾞｰｼﾞ</th><th>感情価</th><th>注視率</th><th>自動性</th><th>活性</th><th>安定</th><th>送信</th><th></th></tr>" +
+    "<tr><th>調査</th><th>参加者</th><th>刺激</th><th>日時</th><th>ｴﾝｹﾞｰｼﾞ</th><th>感情価</th><th>注視率</th><th>自動性</th><th>活性</th><th>安定</th><th>送信</th><th></th></tr>" +
     sessions.map((s, i) =>
-      `<tr><td>${escapeHtml(s.participant_id) || "–"}</td>` +
+      `<tr><td>${escapeHtml(s.study_id) || "–"}</td>` +
+      `<td>${escapeHtml(s.participant_id) || "–"}</td>` +
       `<td>${escapeHtml(s.stimulus_label) || "–"}</td>` +
       `<td>${(s.saved_at || "").slice(5, 16).replace("T", " ")}</td>` +
       `<td>${fmtN(s.engagement_mean)}</td><td>${fmtN(s.valence_mean)}</td><td>${fmtN(s.attention_ratio)}</td>` +
@@ -1387,6 +1420,14 @@ els.btnShare.addEventListener("click", () => {
 });
 els.btnSessionsShare.addEventListener("click", () =>
   shareCsvs([[`reaction_sessions_${new Date().toISOString().slice(0, 10)}.csv`, sessions]]));
+
+// 調査IDの復元と自動保存（リンクの ?study=… または前回入力値）
+try {
+  els.inpStudy.value = localStorage.getItem(STUDY_KEY) || "";
+} catch { /* localStorage 不可なら空欄から */ }
+els.inpStudy.addEventListener("change", () => {
+  try { localStorage.setItem(STUDY_KEY, els.inpStudy.value.trim()); } catch { /* 保存不可でも動作は継続 */ }
+});
 
 initCorrControls();
 renderSessions();

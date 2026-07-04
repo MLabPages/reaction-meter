@@ -364,8 +364,8 @@ video, #overlay {
   text-align: right;
 }
 .sessions-table th { background: var(--panel-2); color: var(--muted); font-weight: normal; }
-.sessions-table td:first-child, .sessions-table td:nth-child(2),
-.sessions-table th:first-child, .sessions-table th:nth-child(2) { text-align: left; }
+.sessions-table td:nth-child(-n+3),
+.sessions-table th:nth-child(-n+3) { text-align: left; }
 .sessions-table .score-input {
   width: 58px;
   background: var(--bg);
