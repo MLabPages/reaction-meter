@@ -62,6 +62,7 @@ const els = {
   btnCollectorLink: $("btnCollectorLink"), btnSendUnsent: $("btnSendUnsent"),
   collectorMsg: $("collectorMsg"),
   btnQr: $("btnQr"), qrArea: $("qrArea"), qrImg: $("qrImg"),
+  destBadge: $("destBadge"),
   btnShare: $("btnShare"), btnSessionsShare: $("btnSessionsShare"),
 };
 
@@ -886,6 +887,7 @@ function showDiagnosis() {
 // ★ 既定の回収設定：ここに GAS の URL を書いておくと、素のURLを開くだけで
 //   送信設定が有効になる（リンクにパラメータを付ける必要がなくなる）
 const DEFAULT_COLLECTOR = {
+  label: "既定（管理者のシート）", // 画面の「送信先」表示に使う名前。自由に変更可
   url: "https://script.google.com/macros/s/AKfycbwzLD2yFSh2K37sUJKZ6S4HPAAPJjwJA9vAYq9Imh7VgBKP3vMo7zGuBpPDnh-4AHrUgQ/exec",
   token: "",
   autoSend: true,
@@ -895,7 +897,7 @@ const DEFAULT_COLLECTOR = {
 // ★ 短縮コード：?c=名前 で切り替えられる送信先プリセット。
 //   他の研究者が使う場合はここに1行追加して、?c=名前 の短いリンクを配布する
 const COLLECTOR_PRESETS = {
-  // 例) tanaka: { url: "https://script.google.com/macros/s/XXXX/exec", token: "", autoSend: true, sendTimeseries: false },
+  // 例) tanaka: { label: "田中研", url: "https://script.google.com/macros/s/XXXX/exec", token: "", autoSend: true, sendTimeseries: false },
 };
 
 const COLLECTOR_KEY = "reactionMeterCollector";
@@ -907,30 +909,33 @@ try {
 // 調査ID：リンクの ?study=… で配布でき、全データに study_id 列として記録される
 const STUDY_KEY = "reactionMeterStudy";
 
-// 設定込みリンク（?c=名前 / ?collector=… / ?study=…）で開かれた場合はその設定を取り込む
+// 設定込みリンク（?c=名前 / ?collector=… / ?study=…）で開かれた場合はその設定を取り込む。
+// このとき「リンクに書かれていない設定は既定値に戻す」（＝リセット）。
+// 端末に残った過去の設定に左右されず、同じリンクを開けば必ず同じ状態になる。
 (function readCollectorParams() {
   const qs = new URLSearchParams(location.search);
-  let consumed = false;
+  const hasConfig =
+    qs.get("study") != null || COLLECTOR_PRESETS[qs.get("c")] || qs.get("collector");
+  if (!hasConfig) return;
 
-  const study = qs.get("study");
-  if (study != null) {
-    try { localStorage.setItem(STUDY_KEY, study); } catch { /* 保存不可でも入力欄には反映される */ }
-    consumed = true;
-  }
+  // まず全設定を既定値に戻す（調査IDの既定は「なし」）
+  collectorCfg = { ...DEFAULT_COLLECTOR };
+  let study = "";
 
   const preset = COLLECTOR_PRESETS[qs.get("c")];
   if (preset) {
     collectorCfg = { ...collectorCfg, ...preset };
-    consumed = true;
   } else if (qs.get("collector")) {
-    collectorCfg.url = qs.get("collector");
-    collectorCfg.token = qs.get("token") || "";
-    collectorCfg.autoSend = qs.get("auto") !== "0";
-    collectorCfg.sendTimeseries = qs.get("ts") === "1";
-    consumed = true;
+    collectorCfg = {
+      url: qs.get("collector"),
+      token: qs.get("token") || "",
+      autoSend: qs.get("auto") !== "0",
+      sendTimeseries: qs.get("ts") === "1",
+    };
   }
+  if (qs.get("study") != null) study = qs.get("study");
 
-  if (!consumed) return;
+  try { localStorage.setItem(STUDY_KEY, study); } catch { /* 保存不可でも入力欄には反映される */ }
   persistCollector();
   // 長いURLパラメータをアドレスバーから消す（設定は保存済み）
   history.replaceState(null, "", location.pathname);
@@ -947,14 +952,31 @@ function collectorMsg(msg, isError = false) {
   els.collectorMsg.classList.toggle("error", isError);
 }
 
+// 現在の送信先の表示名（既定 → プリセット名 → カスタム の順で判定）
+function collectorLabel() {
+  if (!collectorCfg.url) return null;
+  if (sameCollectorCfg(collectorCfg, DEFAULT_COLLECTOR)) {
+    return DEFAULT_COLLECTOR.label || "既定";
+  }
+  const key = Object.keys(COLLECTOR_PRESETS)
+    .find((k) => sameCollectorCfg(collectorCfg, COLLECTOR_PRESETS[k]));
+  if (key) return COLLECTOR_PRESETS[key].label || key;
+  return "カスタム（リンクで設定）";
+}
+
 function applyCollectorToUI() {
   els.inpCollectorUrl.value = collectorCfg.url;
   els.inpCollectorToken.value = collectorCfg.token;
   els.chkAutoSend.checked = collectorCfg.autoSend;
   els.chkSendTs.checked = collectorCfg.sendTimeseries;
-  const on = !!collectorCfg.url;
-  els.collectorState.textContent = on ? "設定済み" : "未設定";
-  els.collectorState.classList.toggle("configured", on);
+  const label = collectorLabel();
+  els.collectorState.textContent = label ?? "未設定";
+  els.collectorState.classList.toggle("configured", !!label);
+  // 記録パネルにも送信先を常時表示（宛先違いに気づけるように）
+  els.destBadge.textContent = label
+    ? `📮 送信先: ${label}${collectorCfg.autoSend ? "" : "（自動送信オフ）"}`
+    : "📮 送信先: 未設定（データは端末にのみ保存）";
+  els.destBadge.classList.toggle("configured", !!label);
 }
 
 function saveCollectorFromUI() {
