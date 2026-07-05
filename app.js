@@ -772,6 +772,7 @@ function summarize() {
   for (const s of main) if (s.gaze_zone) zoneCounts[s.gaze_zone] = (zoneCounts[s.gaze_zone] || 0) + 1;
   const zoneTotal = Object.values(zoneCounts).reduce((a, b) => a + b, 0);
   const gazeTop = Object.entries(zoneCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+  const zoneShare = (z) => r3(zoneTotal ? (zoneCounts[z] || 0) / zoneTotal : null);
 
   // 感情価の変動（表情の起伏の大きさ）
   const vVals = main.map((s) => s.valence).filter((x) => typeof x === "number");
@@ -796,6 +797,16 @@ function summarize() {
     attention_ratio: r3(mean("attention")),
     gaze_center_ratio: r3(zoneTotal ? (zoneCounts["center-middle"] || 0) / zoneTotal : null),
     gaze_zone_top: gazeTop,
+    // 視線マップ（3×3ゾーンの滞留割合。合計≒1）
+    gaze_left_up: zoneShare("left-up"),
+    gaze_center_up: zoneShare("center-up"),
+    gaze_right_up: zoneShare("right-up"),
+    gaze_left_middle: zoneShare("left-middle"),
+    gaze_center_middle: zoneShare("center-middle"),
+    gaze_right_middle: zoneShare("right-middle"),
+    gaze_left_down: zoneShare("left-down"),
+    gaze_center_down: zoneShare("center-down"),
+    gaze_right_down: zoneShare("right-down"),
     blink_per_min: r3(last.blink_total / durationMin),
     duchenne_mean: r3(mean("duchenne")),
     lip_press_mean: r3(mean("lip_press")),
