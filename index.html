@@ -7,6 +7,28 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<!-- 同意確認（最初に表示。同意するまで計測画面は隠れる） -->
+<section id="consentScreen" class="consent-screen">
+  <div class="consent-box">
+    <h1>調査参加のご確認</h1>
+    <p>このツールは、カメラ映像から表情・姿勢・視線などの<strong>身体反応の推定指標だけ</strong>を記録します。</p>
+    <ul>
+      <li>📷 <strong>映像・画像は保存も送信もしません。</strong>解析はすべてこの端末のブラウザ内で行われます。</li>
+      <li>📊 記録されるのは、笑顔や姿勢などの数値、注視や視線のゾーン、まばたき回数といった特徴量のみです。</li>
+      <li>🙂 これらは快・不快や感情を断定するものではなく、探索的な参考指標として扱います。</li>
+      <li>📤 データ回収が設定されている場合、上記の数値データのみが研究者へ送信されます。</li>
+      <li>🛑 参加は任意で、いつでも中止できます（画面を閉じれば計測は止まります）。</li>
+    </ul>
+    <label class="consent-check">
+      <input id="consentCheck" type="checkbox">
+      <span>上記を理解し、カメラを使った測定に同意します。</span>
+    </label>
+    <button id="consentButton" class="btn primary big" disabled>同意して計測画面へ進む</button>
+    <p class="consent-note">※ 未成年の方は保護者の同意を得たうえでご参加ください。ご不明な点は調査担当者にお尋ねください。</p>
+  </div>
+</section>
+
+<div id="appRoot" class="hidden">
 <header>
   <div class="title-block">
     <h1>Reaction Meter</h1>
@@ -248,6 +270,7 @@
 <footer>
   <p>解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみで、データ回収が設定されている場合はその数値のみが研究者のスプレッドシートに送信されます。</p>
 </footer>
+</div><!-- /#appRoot -->
 
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script type="module" src="app.js"></script>
