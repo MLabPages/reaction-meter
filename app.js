@@ -64,6 +64,8 @@ const els = {
   btnQr: $("btnQr"), qrArea: $("qrArea"), qrImg: $("qrImg"),
   destBadge: $("destBadge"),
   btnShare: $("btnShare"), btnSessionsShare: $("btnSessionsShare"),
+  consentScreen: $("consentScreen"), consentCheck: $("consentCheck"),
+  consentButton: $("consentButton"), appRoot: $("appRoot"),
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -1469,3 +1471,15 @@ applyMirror();
 if (!navigator.mediaDevices?.getUserMedia) {
   setStatus("このブラウザはカメラAPIに対応していません。HTTPS（または localhost）でアクセスしているか確認してください。", true);
 }
+
+// ---------- 同意確認 ----------
+// 参加者が入れ替わりうるため、同意はページを開くたびに確認する（永続化しない）
+els.consentCheck.addEventListener("change", () => {
+  els.consentButton.disabled = !els.consentCheck.checked;
+});
+els.consentButton.addEventListener("click", () => {
+  if (!els.consentCheck.checked) return;
+  els.consentScreen.classList.add("hidden");
+  els.appRoot.classList.remove("hidden");
+  window.scrollTo(0, 0);
+});
