@@ -12,10 +12,10 @@ const MEDIAPIPE_WASM =
 const FACE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const POSE_MODEL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 
 const SAMPLE_INTERVAL_MS = 200; // 5Hz で時系列に記録
-const POSE_INTERVAL_MS = 150;   // 姿勢推定は少し間引いて負荷を下げる
+const POSE_INTERVAL_MS = 180;   // fullモデルに合わせ、姿勢推定は少し間引いて負荷を下げる
 const CALIB_MS = 2000;          // 記録開始直後の基準値計測時間
 const CHART_WINDOW_MS = 60000;
 
@@ -37,6 +37,7 @@ const els = {
   valenceFill: $("valenceFill"), valValence: $("valValence"),
   valEngage: $("valEngage"), valAttention: $("valAttention"),
   valPosture: $("valPosture"), valBlink: $("valBlink"), valLean: $("valLean"),
+  valPoseQuality: $("valPoseQuality"), valBodyActivity: $("valBodyActivity"),
   chart: $("chart"),
   diagnosisPanel: $("diagnosisPanel"), diagnosisBody: $("diagnosisBody"),
   chkDetails: $("chkDetails"), detailsSection: $("detailsSection"),
@@ -46,6 +47,7 @@ const els = {
   barPucker: $("barPucker"), valPucker: $("valPucker"),
   barMove: $("barMove"), valMove: $("valMove"),
   valNod: $("valNod"), valShake: $("valShake"), valTouch: $("valTouch"),
+  valTorsoLean: $("valTorsoLean"), valHandMove: $("valHandMove"), valArmOpen: $("valArmOpen"),
   valGazeZone: $("valGazeZone"), gazeGrid: $("gazeGrid"),
   selfreportPanel: $("selfreportPanel"),
   inpAuto: $("inpAuto"), inpActive: $("inpActive"), inpStable: $("inpStable"),
@@ -69,6 +71,17 @@ const els = {
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const POSE_TRACKED_INDICES = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+const WRIST_INDICES = [15, 16];
+const POSE_VISIBILITY_MIN = 0.45;
+const landmarkVisible = (p, min = POSE_VISIBILITY_MIN) => !!p && (p.visibility ?? 1) >= min;
+const landmarkVisibility = (p) => (p ? clamp(p.visibility ?? 1, 0, 1) : 0);
+const pointDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const midpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const meanNumber = (values) => {
+  const v = values.filter((x) => typeof x === "number" && Number.isFinite(x));
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+};
 
 let faceLandmarker = null;
 let poseLandmarker = null;
@@ -78,6 +91,7 @@ let running = false;
 let rafId = null;
 let lastPoseAt = 0;
 let lastPoseResult = null;
+let prevPoseFrame = null;
 
 // 記録状態
 let recording = false;
@@ -302,6 +316,10 @@ function computeMetrics(faceResult, poseResult, now) {
     gazeX: null, gazeY: null, gazeZone: "", headMove: null,
     poseDetected: false, shoulderTiltDeg: null, headOffset: null,
     neckRatio: null, postureScore: null, engagement: null, faceTouch: null,
+    poseQuality: null, posePointCount: 0, bodyBBoxScale: null, bodyCenterX: null, bodyCenterY: null,
+    bodyScale: null, bodyLeanIn: null, shoulderWidth: null, hipWidth: null, hipTiltDeg: null,
+    torsoLeanX: null, torsoLeanDeg: null, torsoRatio: null, poseMotion: null,
+    handActivity: null, armOpenness: null, bodyEngagement: null,
   };
 
   const bs = blendshapeMap(faceResult);
@@ -384,31 +402,126 @@ function computeMetrics(faceResult, poseResult, now) {
   }
 
   const plm = poseResult?.landmarks?.[0];
-  if (plm && plm[11] && plm[12]) {
-    const ls = plm[11], rs = plm[12], nose = plm[0];
-    if ((ls.visibility ?? 1) > 0.5 && (rs.visibility ?? 1) > 0.5) {
-      m.poseDetected = true;
-      const dx = Math.abs(rs.x - ls.x), dy = Math.abs(rs.y - ls.y);
-      m.shoulderTiltDeg = (Math.atan2(dy, Math.max(dx, 1e-6)) * 180) / Math.PI;
-      const shoulderW = Math.max(Math.hypot(rs.x - ls.x, rs.y - ls.y), 1e-6);
-      const midSX = (ls.x + rs.x) / 2, midSY = (ls.y + rs.y) / 2;
-      m.headOffset = (nose.x - midSX) / shoulderW;
-      m.neckRatio = (midSY - nose.y) / shoulderW; // 小さいほど頭が肩に埋もれている（猫背気味）
+  if (plm) {
+    const visibleIdx = POSE_TRACKED_INDICES.filter((i) => landmarkVisible(plm[i], 0.35));
+    m.posePointCount = visibleIdx.length;
+    m.poseQuality = POSE_TRACKED_INDICES
+      .reduce((sum, i) => sum + landmarkVisibility(plm[i]), 0) / POSE_TRACKED_INDICES.length;
 
+    if (visibleIdx.length >= 4) {
+      const pts = visibleIdx.map((i) => plm[i]);
+      const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      m.bodyBBoxScale = Math.hypot(maxX - minX, maxY - minY);
+      m.bodyCenterX = (minX + maxX) / 2;
+      m.bodyCenterY = (minY + maxY) / 2;
+    }
+
+    const nose = plm[0];
+    const ls = plm[11], rs = plm[12], lw = plm[15], rw = plm[16];
+    const lh = plm[23], rh = plm[24];
+    const shouldersVisible = landmarkVisible(ls) && landmarkVisible(rs);
+    const hipsVisible = landmarkVisible(lh) && landmarkVisible(rh);
+    const noseVisible = landmarkVisible(nose, 0.35);
+    const shoulderMid = shouldersVisible ? midpoint(ls, rs) : null;
+    const hipMid = hipsVisible ? midpoint(lh, rh) : null;
+
+    if (shouldersVisible || (hipsVisible && visibleIdx.length >= 6)) {
+      m.poseDetected = true;
+    }
+
+    if (shouldersVisible) {
+      const dx = Math.abs(rs.x - ls.x), dy = Math.abs(rs.y - ls.y);
+      m.shoulderWidth = pointDistance(ls, rs);
+      m.shoulderTiltDeg = (Math.atan2(dy, Math.max(dx, 1e-6)) * 180) / Math.PI;
+    }
+    if (hipsVisible) {
+      const dx = Math.abs(rh.x - lh.x), dy = Math.abs(rh.y - lh.y);
+      m.hipWidth = pointDistance(lh, rh);
+      m.hipTiltDeg = (Math.atan2(dy, Math.max(dx, 1e-6)) * 180) / Math.PI;
+    }
+    if (shoulderMid && hipMid) {
+      const torsoLen = pointDistance(shoulderMid, hipMid);
+      const norm = Math.max(m.shoulderWidth ?? 0, m.hipWidth ?? 0, torsoLen, 1e-6);
+      m.torsoLeanX = (shoulderMid.x - hipMid.x) / norm;
+      m.torsoLeanDeg = (Math.atan2(shoulderMid.x - hipMid.x, Math.max(hipMid.y - shoulderMid.y, 1e-6)) * 180) / Math.PI;
+      m.torsoRatio = torsoLen / norm;
+      m.bodyScale = Math.max(m.shoulderWidth ?? 0, m.hipWidth ?? 0, torsoLen);
+    } else {
+      m.bodyScale = Math.max(m.shoulderWidth ?? 0, m.hipWidth ?? 0, m.bodyBBoxScale ?? 0) || null;
+    }
+    if (baseline?.bodyScale && m.bodyScale) {
+      m.bodyLeanIn = m.bodyScale / baseline.bodyScale - 1;
+    }
+
+    const movementNorm = Math.max(m.bodyScale ?? 0, m.bodyBBoxScale ?? 0, 1e-6);
+    if (prevPoseFrame && now > prevPoseFrame.t && movementNorm > 0) {
+      const dt = (now - prevPoseFrame.t) / 1000;
+      const motion = [];
+      const handMotion = [];
+      for (const i of visibleIdx) {
+        const prev = prevPoseFrame.points[i];
+        if (!prev) continue;
+        const v = pointDistance(plm[i], prev) / movementNorm / dt;
+        motion.push(v);
+        if (WRIST_INDICES.includes(i)) handMotion.push(v);
+      }
+      m.poseMotion = meanNumber(motion);
+      m.handActivity = meanNumber(handMotion);
+    }
+    prevPoseFrame = {
+      t: now,
+      points: Object.fromEntries(visibleIdx.map((i) => [i, { x: plm[i].x, y: plm[i].y }])),
+    };
+
+    const handBase = shoulderMid ?? hipMid;
+    if (handBase && movementNorm > 0) {
+      m.armOpenness = meanNumber([lw, rw]
+        .filter((w) => landmarkVisible(w))
+        .map((w) => pointDistance(w, handBase) / movementNorm));
+    }
+
+    if (shoulderMid && noseVisible && m.shoulderWidth) {
+      m.headOffset = (nose.x - shoulderMid.x) / m.shoulderWidth;
+      m.neckRatio = (shoulderMid.y - nose.y) / m.shoulderWidth; // 小さいほど頭が肩に埋もれている（猫背気味）
+    }
+
+    if (m.poseDetected) {
       let score = 100;
-      score -= Math.min(40, m.shoulderTiltDeg * 2.5);
-      score -= Math.min(30, Math.abs(m.headOffset) * 120);
-      if (baseline?.neckRatio) {
+      if (m.shoulderTiltDeg != null) score -= Math.min(35, m.shoulderTiltDeg * 2.2);
+      if (m.hipTiltDeg != null) score -= Math.min(20, m.hipTiltDeg * 1.6);
+      if (m.torsoLeanDeg != null) score -= Math.min(30, Math.abs(m.torsoLeanDeg) * 2.0);
+      if (m.headOffset != null) score -= Math.min(25, Math.abs(m.headOffset) * 100);
+      if (baseline?.neckRatio && m.neckRatio != null) {
         const slouch = (baseline.neckRatio - m.neckRatio) / baseline.neckRatio;
-        if (slouch > 0.12) score -= Math.min(30, (slouch - 0.12) * 200);
+        if (slouch > 0.12) score -= Math.min(25, (slouch - 0.12) * 180);
+      } else if (baseline?.torsoRatio && m.torsoRatio != null) {
+        const collapse = (baseline.torsoRatio - m.torsoRatio) / baseline.torsoRatio;
+        if (collapse > 0.10) score -= Math.min(25, (collapse - 0.10) * 160);
       }
       m.postureScore = Math.max(0, Math.round(score));
-
-      // 顔タッチ：手首（15=左, 16=右）が顔の近くにある（思考・不安のサイン）
-      const near = (w) => w && (w.visibility ?? 1) > 0.5 &&
-        Math.hypot(w.x - nose.x, w.y - nose.y) < shoulderW * 0.65;
-      m.faceTouch = near(plm[15]) || near(plm[16]) ? 1 : 0;
     }
+
+    // 顔タッチ：手首（15=左, 16=右）が顔の近くにある（思考・迷い・不安のサイン）
+    if (noseVisible && movementNorm > 0) {
+      const near = (w) => landmarkVisible(w) && pointDistance(w, nose) < movementNorm * 0.45;
+      m.faceTouch = near(lw) || near(rw) ? 1 : 0;
+    }
+
+    if (m.poseDetected) {
+      const handScore = clamp((m.handActivity ?? 0) / 1.2, 0, 1);
+      const armScore = clamp(((m.armOpenness ?? 0) - 0.35) / 0.9, 0, 1);
+      const leanScore = clamp((m.bodyLeanIn ?? 0) * 4, 0, 1);
+      const posture = m.postureScore == null ? 0.5 : m.postureScore / 100;
+      m.bodyEngagement = clamp(
+        0.35 * handScore + 0.25 * armScore + 0.20 * leanScore + 0.20 * posture,
+        0,
+        1,
+      );
+    }
+  } else {
+    prevPoseFrame = null;
   }
 
   // エンゲージメント合成指標（0-1）：注視・感情の強さ・前のめり・眉上げの加重和
@@ -419,6 +532,8 @@ function computeMetrics(faceResult, poseResult, now) {
       0.2 * Math.min(1, Math.abs(m.valence) * 2) +
       0.2 * lean +
       0.15 * Math.min(1, m.browRaise * 2);
+  } else if (m.poseDetected) {
+    m.engagement = m.bodyEngagement;
   }
   return m;
 }
@@ -440,8 +555,14 @@ function zoneLabelJa(zone) {
 // ---------- 基準値（キャリブレーション） ----------
 function updateCalibration(m, now) {
   if (!calibrating) return;
-  if (m.faceDetected) {
-    calibBuf.push({ interocular: m.interocular, neckRatio: m.neckRatio, pitchProxy: m.pitchProxy });
+  if (m.faceDetected || m.poseDetected) {
+    calibBuf.push({
+      interocular: m.interocular,
+      neckRatio: m.neckRatio,
+      pitchProxy: m.pitchProxy,
+      bodyScale: m.bodyScale,
+      torsoRatio: m.torsoRatio,
+    });
   }
   if (now - recStartMs >= CALIB_MS) {
     calibrating = false;
@@ -454,6 +575,8 @@ function updateCalibration(m, now) {
       interocular: median(calibBuf.map((s) => s.interocular)),
       neckRatio: median(calibBuf.map((s) => s.neckRatio)),
       pitchProxy: median(calibBuf.map((s) => s.pitchProxy)),
+      bodyScale: median(calibBuf.map((s) => s.bodyScale)),
+      torsoRatio: median(calibBuf.map((s) => s.torsoRatio)),
     };
     calibBuf = [];
   }
@@ -469,7 +592,8 @@ function updateUI(m, now) {
   const eye = ema("eye", m.eyeOpen);
   const valence = ema("valence", m.valence);
   const engage = ema("engage", m.engagement);
-  const lean = ema("lean", m.leanIn);
+  const lean = ema("lean", m.leanIn ?? m.bodyLeanIn);
+  const bodyActivity = ema("bodyActivity", m.poseMotion, 0.2);
 
   setBar(els.barSmile, els.valSmile, smile);
   setBar(els.barFurrow, els.valFurrow, furrow);
@@ -497,6 +621,11 @@ function updateUI(m, now) {
   els.valAttention.textContent = m.faceDetected ? (m.attention ? "◎" : "✕") : "–";
   els.valAttention.style.color = m.attention ? "var(--green)" : "var(--muted)";
   els.valPosture.textContent = m.postureScore == null ? "–" : m.postureScore;
+  els.valPoseQuality.textContent =
+    m.poseQuality == null ? "–" : Math.round(m.poseQuality * 100) + "%";
+  els.valPoseQuality.style.color = m.poseDetected ? "var(--green)" : "var(--muted)";
+  els.valBodyActivity.textContent =
+    bodyActivity == null ? "–" : Math.round(clamp(bodyActivity / 1.2, 0, 1) * 100);
   els.valBlink.textContent = blinkTotal;
   els.valLean.textContent =
     lean == null ? "–" : (lean >= 0 ? "+" : "") + (lean * 100).toFixed(0) + "%";
@@ -513,6 +642,11 @@ function updateUI(m, now) {
     els.valNod.textContent = nodTotal;
     els.valShake.textContent = shakeTotal;
     els.valTouch.textContent = m.faceTouch == null ? "–" : m.faceTouch ? "✋ 触れている" : "なし";
+    els.valTorsoLean.textContent =
+      m.torsoLeanDeg == null ? "–" : (m.torsoLeanDeg >= 0 ? "+" : "") + m.torsoLeanDeg.toFixed(0) + "°";
+    els.valHandMove.textContent =
+      m.handActivity == null ? "–" : Math.round(clamp(m.handActivity / 1.2, 0, 1) * 100);
+    els.valArmOpen.textContent = m.armOpenness == null ? "–" : m.armOpenness.toFixed(2);
     updateGazeGrid(m.gazeZone);
   }
 
@@ -588,17 +722,30 @@ function drawOverlay(faceResult, poseResult) {
     }
   }
   const plm = poseResult?.landmarks?.[0];
-  if (plm && plm[11] && plm[12]) {
-    ctx.strokeStyle = "rgba(53,199,111,.8)";
+  if (plm) {
+    const segments = [
+      [11, 12], [11, 23], [12, 24], [23, 24],
+      [11, 13], [13, 15], [12, 14], [14, 16],
+      [23, 25], [25, 27], [24, 26], [26, 28],
+    ];
+    ctx.strokeStyle = "rgba(53,199,111,.82)";
     ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(plm[11].x * W, plm[11].y * H);
-    ctx.lineTo(plm[12].x * W, plm[12].y * H);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(53,199,111,.9)";
-    ctx.beginPath();
-    ctx.arc(plm[0].x * W, plm[0].y * H, 5, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.lineCap = "round";
+    for (const [a, b] of segments) {
+      if (!landmarkVisible(plm[a], 0.35) || !landmarkVisible(plm[b], 0.35)) continue;
+      ctx.beginPath();
+      ctx.moveTo(plm[a].x * W, plm[a].y * H);
+      ctx.lineTo(plm[b].x * W, plm[b].y * H);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(53,199,111,.92)";
+    for (const i of POSE_TRACKED_INDICES) {
+      if (!landmarkVisible(plm[i], 0.35)) continue;
+      const r = WRIST_INDICES.includes(i) ? 5 : 3.5;
+      ctx.beginPath();
+      ctx.arc(plm[i].x * W, plm[i].y * H, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
@@ -613,6 +760,7 @@ function startRecording() {
   shakeTotal = 0;
   gazeDwell = {};
   prevNose = null;
+  prevPoseFrame = null;
   baseline = null;
   calibBuf = [];
   calibrating = true;
@@ -697,11 +845,28 @@ function pushSample(m, now) {
     shake_total: shakeTotal,
     lean_in: r3(m.leanIn),
     pose_detected: m.poseDetected ? 1 : 0,
+    pose_quality: r3(m.poseQuality),
+    pose_point_count: m.posePointCount,
+    body_bbox_scale: r3(m.bodyBBoxScale),
+    body_center_x: r3(m.bodyCenterX),
+    body_center_y: r3(m.bodyCenterY),
+    body_scale: r3(m.bodyScale),
+    body_lean_in: r3(m.bodyLeanIn),
+    shoulder_width: r3(m.shoulderWidth),
     shoulder_tilt_deg: r3(m.shoulderTiltDeg),
+    hip_width: r3(m.hipWidth),
+    hip_tilt_deg: r3(m.hipTiltDeg),
     head_offset: r3(m.headOffset),
     neck_ratio: r3(m.neckRatio),
+    torso_lean_x: r3(m.torsoLeanX),
+    torso_lean_deg: r3(m.torsoLeanDeg),
+    torso_ratio: r3(m.torsoRatio),
+    pose_motion: r3(m.poseMotion),
+    hand_activity: r3(m.handActivity),
+    arm_openness: r3(m.armOpenness),
     posture_score: m.postureScore ?? "",
     face_touch: m.faceTouch ?? "",
+    body_engagement: r3(m.bodyEngagement),
     engagement: r3(m.engagement),
   });
   if (!calibrating && m.gazeZone) gazeDwell[m.gazeZone] = (gazeDwell[m.gazeZone] || 0) + 1;
@@ -754,30 +919,42 @@ function fileStem() {
 
 // ---------- サマリー・診断 ----------
 function summarize() {
-  const main = samples.filter((s) => s.phase === "main" && s.face_detected === 1);
   const all = samples.filter((s) => s.phase === "main");
-  if (!main.length) return null;
+  if (!all.length) return null;
 
-  const mean = (key) => {
-    const v = main.map((s) => s[key]).filter((x) => typeof x === "number");
+  const face = all.filter((s) => s.face_detected === 1);
+  const pose = all.filter((s) => s.pose_detected === 1);
+  if (!face.length && !pose.length) return null;
+
+  const meanIn = (rows, key) => {
+    const v = rows.map((s) => s[key]).filter((x) => typeof x === "number");
     return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
   };
-  const max = (key) => {
-    const v = main.map((s) => s[key]).filter((x) => typeof x === "number");
+  const meanAbsIn = (rows, key) => {
+    const v = rows.map((s) => s[key]).filter((x) => typeof x === "number").map(Math.abs);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
+  const maxIn = (rows, key) => {
+    const v = rows.map((s) => s[key]).filter((x) => typeof x === "number");
     return v.length ? Math.max(...v) : null;
   };
-  const durationMin = (all.at(-1).elapsed_ms - all[0].elapsed_ms) / 60000 || 1 / 60;
-  const last = samples.at(-1);
+  const meanFace = (key) => meanIn(face, key);
+  const meanPose = (key) => meanIn(pose, key);
+  const meanAll = (key) => meanIn(all, key);
+  const durationMs = all.at(-1).elapsed_ms - all[0].elapsed_ms;
+  const durationMin = Math.max(durationMs / 60000, 1 / 60);
+  const last = all.at(-1);
+  const lastTotals = samples.at(-1) ?? last;
 
   // 視線ゾーンの最頻値と中央滞留率
   const zoneCounts = {};
-  for (const s of main) if (s.gaze_zone) zoneCounts[s.gaze_zone] = (zoneCounts[s.gaze_zone] || 0) + 1;
+  for (const s of face) if (s.gaze_zone) zoneCounts[s.gaze_zone] = (zoneCounts[s.gaze_zone] || 0) + 1;
   const zoneTotal = Object.values(zoneCounts).reduce((a, b) => a + b, 0);
   const gazeTop = Object.entries(zoneCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
   const zoneShare = (z) => r3(zoneTotal ? (zoneCounts[z] || 0) / zoneTotal : null);
 
   // 感情価の変動（表情の起伏の大きさ）
-  const vVals = main.map((s) => s.valence).filter((x) => typeof x === "number");
+  const vVals = face.map((s) => s.valence).filter((x) => typeof x === "number");
   const vMean = vVals.length ? vVals.reduce((a, b) => a + b, 0) / vVals.length : 0;
   const valenceSd = vVals.length
     ? Math.sqrt(vVals.reduce((a, b) => a + (b - vMean) ** 2, 0) / vVals.length)
@@ -787,16 +964,19 @@ function summarize() {
     study_id: last.study_id,
     participant_id: last.participant_id,
     stimulus_label: last.stimulus_label,
-    duration_sec: Math.round((all.at(-1).elapsed_ms - all[0].elapsed_ms) / 1000),
-    n_samples: main.length,
-    face_detected_ratio: r3(main.length / all.length),
-    valence_mean: r3(mean("valence")),
-    valence_positive_ratio: r3(main.filter((s) => s.valence > 0.1).length / main.length),
-    smile_mean: r3(mean("smile")),
-    smile_peak: r3(max("smile")),
-    smile_events: last.smile_events,
-    brow_furrow_mean: r3(mean("brow_furrow")),
-    attention_ratio: r3(mean("attention")),
+    duration_sec: Math.round(durationMs / 1000),
+    n_samples: all.length,
+    n_face_samples: face.length,
+    n_pose_samples: pose.length,
+    face_detected_ratio: r3(face.length / all.length),
+    pose_detected_ratio: r3(pose.length / all.length),
+    valence_mean: r3(meanFace("valence")),
+    valence_positive_ratio: r3(face.length ? face.filter((s) => s.valence > 0.1).length / face.length : null),
+    smile_mean: r3(meanFace("smile")),
+    smile_peak: r3(maxIn(face, "smile")),
+    smile_events: lastTotals.smile_events ?? 0,
+    brow_furrow_mean: r3(meanFace("brow_furrow")),
+    attention_ratio: r3(meanFace("attention")),
     gaze_center_ratio: r3(zoneTotal ? (zoneCounts["center-middle"] || 0) / zoneTotal : null),
     gaze_zone_top: gazeTop,
     // 視線マップ（3×3ゾーンの滞留割合。合計≒1）
@@ -809,18 +989,30 @@ function summarize() {
     gaze_left_down: zoneShare("left-down"),
     gaze_center_down: zoneShare("center-down"),
     gaze_right_down: zoneShare("right-down"),
-    blink_per_min: r3(last.blink_total / durationMin),
-    duchenne_mean: r3(mean("duchenne")),
-    lip_press_mean: r3(mean("lip_press")),
-    nose_sneer_mean: r3(mean("nose_sneer")),
+    blink_per_min: r3((lastTotals.blink_total ?? 0) / durationMin),
+    duchenne_mean: r3(meanFace("duchenne")),
+    lip_press_mean: r3(meanFace("lip_press")),
+    nose_sneer_mean: r3(meanFace("nose_sneer")),
     valence_sd: r3(valenceSd),
-    nod_count: last.nod_total,
-    shake_count: last.shake_total,
-    face_touch_ratio: r3(mean("face_touch")),
-    head_move_mean: r3(mean("head_move")),
-    lean_in_mean: r3(mean("lean_in")),
-    posture_score_mean: r3(mean("posture_score")),
-    engagement_mean: r3(mean("engagement")),
+    nod_count: lastTotals.nod_total ?? 0,
+    shake_count: lastTotals.shake_total ?? 0,
+    face_touch_ratio: r3(meanPose("face_touch")),
+    head_move_mean: r3(meanFace("head_move")),
+    lean_in_mean: r3(meanFace("lean_in")),
+    pose_quality_mean: r3(meanPose("pose_quality")),
+    body_lean_in_mean: r3(meanPose("body_lean_in")),
+    body_scale_mean: r3(meanPose("body_scale")),
+    shoulder_tilt_deg_mean: r3(meanPose("shoulder_tilt_deg")),
+    hip_tilt_deg_mean: r3(meanPose("hip_tilt_deg")),
+    torso_lean_deg_mean: r3(meanPose("torso_lean_deg")),
+    torso_lean_deg_abs_mean: r3(meanAbsIn(pose, "torso_lean_deg")),
+    torso_ratio_mean: r3(meanPose("torso_ratio")),
+    pose_motion_mean: r3(meanPose("pose_motion")),
+    hand_activity_mean: r3(meanPose("hand_activity")),
+    arm_openness_mean: r3(meanPose("arm_openness")),
+    body_engagement_mean: r3(meanPose("body_engagement")),
+    posture_score_mean: r3(meanPose("posture_score")),
+    engagement_mean: r3(meanAll("engagement")),
   };
 }
 
@@ -834,58 +1026,77 @@ function showDiagnosis() {
   }
 
   const notes = [];
-  // 感情価
-  if (s.valence_mean >= 0.15) notes.push("😊 <strong>ポジティブ反応が優勢</strong>：笑顔が多く、好意的な反応の可能性があります。");
-  else if (s.valence_mean <= -0.1) notes.push("😟 <strong>ネガティブ反応が優勢</strong>：眉間のしわが目立ちました。困惑・不快、または内容が難しかった可能性があります。");
-  else notes.push("😐 表情反応は中立的でした。感情を強く動かす要素が少なかった可能性があります。");
-  // 笑顔イベント
-  if (s.smile_events >= 3) notes.push(`😄 明確な笑顔が ${s.smile_events} 回検出されました。どの時点かは時系列CSVの smile 列で確認できます。`);
-  // 本物の笑顔（Duchenne）
-  if (s.duchenne_mean >= 0.12) notes.push("😊 目元も動く<strong>「本物の笑顔」</strong>が見られました。表面的でない好意反応の可能性があります。");
-  else if (s.smile_mean >= 0.25 && s.duchenne_mean != null && s.duchenne_mean < 0.05) notes.push("🙂 笑顔はありましたが目元の動きが小さく、<strong>社交的な笑顔</strong>（気遣い）の可能性があります。自己報告と照合してください。");
-  // 嫌悪
-  if (s.nose_sneer_mean >= 0.08) notes.push("🤢 <strong>嫌悪に関連する表情</strong>（鼻のしわ）が検出されました。デザイン・表現への生理的な忌避感の可能性があります。");
-  // 注視
-  if (s.attention_ratio >= 0.8) notes.push("👀 <strong>注視率が高い</strong>（" + Math.round(s.attention_ratio * 100) + "%）：画面/対象への関心が持続していました。");
-  else if (s.attention_ratio < 0.5) notes.push("👀 <strong>注視率が低い</strong>（" + Math.round(s.attention_ratio * 100) + "%）：視線が外れがちでした。関心低下、または提示方法の問題の可能性があります。");
-  // 視線
-  if (s.gaze_center_ratio != null) {
-    if (s.gaze_center_ratio >= 0.7) notes.push(`👁 <strong>視線が中央に集中</strong>（${Math.round(s.gaze_center_ratio * 100)}%）：対象をしっかり見ていました。`);
-    else if (s.gaze_center_ratio < 0.4 && s.gaze_zone_top) notes.push(`👁 視線が中央から外れがちでした（最も長く見ていたのは「${zoneLabelJa(s.gaze_zone_top)}」）。注意が逸れたか、周辺の情報を見ていた可能性があります。`);
+  const hasNum = (v) => typeof v === "number" && Number.isFinite(v);
+  const pct = (v) => hasNum(v) ? Math.round(v * 100) + "%" : "–";
+  const whole = (v) => hasNum(v) ? Math.round(v) : "–";
+
+  if (s.n_face_samples > 0 && hasNum(s.valence_mean)) {
+    // 感情価
+    if (s.valence_mean >= 0.15) notes.push("😊 <strong>ポジティブ反応が優勢</strong>：笑顔が多く、好意的な反応の可能性があります。");
+    else if (s.valence_mean <= -0.1) notes.push("😟 <strong>ネガティブ反応が優勢</strong>：眉間のしわが目立ちました。困惑・不快、または内容が難しかった可能性があります。");
+    else notes.push("😐 表情反応は中立的でした。感情を強く動かす要素が少なかった可能性があります。");
+
+    if (s.smile_events >= 3) notes.push(`😄 明確な笑顔が ${s.smile_events} 回検出されました。どの時点かは時系列CSVの smile 列で確認できます。`);
+    if (s.duchenne_mean >= 0.12) notes.push("😊 目元も動く<strong>「本物の笑顔」</strong>が見られました。表面的でない好意反応の可能性があります。");
+    else if (s.smile_mean >= 0.25 && hasNum(s.duchenne_mean) && s.duchenne_mean < 0.05) notes.push("🙂 笑顔はありましたが目元の動きが小さく、<strong>社交的な笑顔</strong>（気遣い）の可能性があります。自己報告と照合してください。");
+    if (s.nose_sneer_mean >= 0.08) notes.push("🤢 <strong>嫌悪に関連する表情</strong>（鼻のしわ）が検出されました。デザイン・表現への生理的な忌避感の可能性があります。");
+
+    if (s.attention_ratio >= 0.8) notes.push(`👀 <strong>注視率が高い</strong>（${pct(s.attention_ratio)}）：画面/対象への関心が持続していました。`);
+    else if (hasNum(s.attention_ratio) && s.attention_ratio < 0.5) notes.push(`👀 <strong>注視率が低い</strong>（${pct(s.attention_ratio)}）：視線が外れがちでした。関心低下、または提示方法の問題の可能性があります。`);
+
+    if (hasNum(s.gaze_center_ratio)) {
+      if (s.gaze_center_ratio >= 0.7) notes.push(`👁 <strong>視線が中央に集中</strong>（${pct(s.gaze_center_ratio)}）：対象をしっかり見ていました。`);
+      else if (s.gaze_center_ratio < 0.4 && s.gaze_zone_top) notes.push(`👁 視線が中央から外れがちでした（最も長く見ていたのは「${zoneLabelJa(s.gaze_zone_top)}」）。注意が逸れたか、周辺の情報を見ていた可能性があります。`);
+    }
+
+    if (s.valence_sd >= 0.15) notes.push("🎢 表情の起伏が大きく、感情を動かす場面があったようです。時系列CSVの valence 列で山谷の時点を確認できます。");
+    if (s.blink_per_min > 30) notes.push(`👁 まばたきが多め（${Math.round(s.blink_per_min)}回/分）：緊張・認知負荷が高かった可能性があります。`);
+    else if (s.blink_per_min < 10) notes.push(`👁 まばたきが少なめ（${Math.round(s.blink_per_min)}回/分）：対象への集中・没入を示す可能性があります。`);
+  } else {
+    notes.push("🙂 表情は十分に検出できませんでした。遠くから商品利用の様子を撮る場面では、下の姿勢・手の動き指標を中心に見てください。");
   }
-  // うなずき・首振り
+
   if (s.nod_count >= 2) notes.push(`🙆 うなずきが ${s.nod_count} 回検出されました。同意・納得のサインの可能性があります。`);
   if (s.shake_count >= 2) notes.push(`🙅 首振りが ${s.shake_count} 回検出されました。否定・違和感のサインの可能性があります。`);
-  // 顔タッチ・そわそわ
-  if (s.face_touch_ratio > 0.15) notes.push(`✋ 顔に手を触れる時間が長めでした（${Math.round(s.face_touch_ratio * 100)}%）。思考・迷い・不安のサインとされます。`);
+  if (s.face_touch_ratio > 0.15) notes.push(`✋ 顔に手を触れる時間が長めでした（${pct(s.face_touch_ratio)}）。思考・迷い・不安のサインとされます。`);
   if (s.head_move_mean > 0.08) notes.push("🌀 頭の動きが多く、<strong>落ち着きのなさ</strong>が見られました。退屈・違和感の可能性があります。");
-  // 表情の起伏
-  if (s.valence_sd >= 0.15) notes.push("🎢 表情の起伏が大きく、感情を動かす場面があったようです。時系列CSVの valence 列で山谷の時点を確認できます。");
-  // まばたき
-  if (s.blink_per_min > 30) notes.push(`👁 まばたきが多め（${Math.round(s.blink_per_min)}回/分）：緊張・認知負荷が高かった可能性があります。`);
-  else if (s.blink_per_min < 10) notes.push(`👁 まばたきが少なめ（${Math.round(s.blink_per_min)}回/分）：対象への集中・没入を示す可能性があります。`);
-  // 前のめり
-  if (s.lean_in_mean > 0.05) notes.push("🪑 <strong>前のめり傾向</strong>：開始時より画面に近づいており、関心の高さを示す可能性があります。");
-  else if (s.lean_in_mean < -0.05) notes.push("🪑 <strong>のけぞり傾向</strong>：開始時より画面から離れており、退屈・回避の可能性があります。");
-  // 姿勢
-  if (s.posture_score_mean != null) {
-    if (s.posture_score_mean >= 75) notes.push(`🧍 姿勢は良好でした（平均スコア ${Math.round(s.posture_score_mean)}）。`);
-    else if (s.posture_score_mean < 55) notes.push(`🧍 姿勢の崩れ（傾き・猫背傾向）が見られました（平均スコア ${Math.round(s.posture_score_mean)}）。疲労や集中低下のサインの可能性があります。`);
+
+  const leanMean = hasNum(s.lean_in_mean) ? s.lean_in_mean : s.body_lean_in_mean;
+  if (leanMean > 0.05) notes.push("🪑 <strong>前のめり傾向</strong>：開始時より対象に近づいており、関心の高さを示す可能性があります。");
+  else if (leanMean < -0.05) notes.push("🪑 <strong>のけぞり傾向</strong>：開始時より対象から離れており、退屈・回避の可能性があります。");
+
+  if (hasNum(s.body_engagement_mean) && s.body_engagement_mean >= 0.45) {
+    notes.push(`🧍 <strong>身体の関与が高め</strong>（${pct(s.body_engagement_mean)}）：姿勢変化や手の動きから、対象との相互作用が見られます。`);
   }
-  // データ品質
-  if (s.face_detected_ratio < 0.7) notes.push(`⚠️ 顔検出率が ${Math.round(s.face_detected_ratio * 100)}% と低めです。照明・カメラ角度を改善すると精度が上がります。`);
+  if (s.hand_activity_mean >= 0.35) notes.push("✋ 手の動きが多く、商品・プロトタイプを操作している場面を拾えている可能性があります。");
+  if (s.arm_openness_mean >= 0.75) notes.push("👐 腕が身体から離れる時間が長めでした。手を伸ばす、持つ、操作するなどの動作が多かった可能性があります。");
+  if (s.torso_lean_deg_abs_mean >= 10) notes.push(`🧭 体幹の左右傾きが目立ちました（平均 ${whole(s.torso_lean_deg_abs_mean)}°）。対象をのぞき込む、片側へ寄るなどの行動があった可能性があります。`);
+  if (s.pose_motion_mean >= 0.45) notes.push("🌀 全身の動きが大きめでした。探索・操作・落ち着きのなさのいずれかとして、動画やマーク時点と照合してください。");
+
+  if (hasNum(s.posture_score_mean)) {
+    if (s.posture_score_mean >= 75) notes.push(`🧍 姿勢は良好でした（平均スコア ${Math.round(s.posture_score_mean)}）。`);
+    else if (s.posture_score_mean < 55) notes.push(`🧍 姿勢の崩れ（肩・腰・体幹の傾き）が見られました（平均スコア ${Math.round(s.posture_score_mean)}）。疲労や集中低下のサインの可能性があります。`);
+  }
+
+  if (s.pose_detected_ratio < 0.7 && s.face_detected_ratio < 0.7) {
+    notes.push(`⚠️ 顔・姿勢とも検出率が低めです（顔 ${pct(s.face_detected_ratio)} / 姿勢 ${pct(s.pose_detected_ratio)}）。照明・距離・全身が画角に入る位置を確認してください。`);
+  } else if (s.face_detected_ratio < 0.5 && s.pose_detected_ratio >= 0.7) {
+    notes.push(`ℹ️ 顔検出率は低め（${pct(s.face_detected_ratio)}）ですが、姿勢検出率は十分です（${pct(s.pose_detected_ratio)}）。遠景記録としては姿勢中心に解釈できます。`);
+  } else if (s.pose_detected_ratio < 0.7) {
+    notes.push(`⚠️ 姿勢検出率が ${pct(s.pose_detected_ratio)} と低めです。商品利用シーンでは、腰から上と両手が画角に入る距離にすると拾いやすくなります。`);
+  }
 
   const rows = [
     ["記録時間", s.duration_sec + " 秒"],
-    ["感情価（平均）", s.valence_mean],
-    ["ポジティブ時間率", Math.round(s.valence_positive_ratio * 100) + "%"],
-    ["注視率", Math.round(s.attention_ratio * 100) + "%"],
-    ["視線中央率", s.gaze_center_ratio != null ? Math.round(s.gaze_center_ratio * 100) + "%" : "–"],
+    ["顔検出率", pct(s.face_detected_ratio)],
+    ["姿勢検出率", pct(s.pose_detected_ratio)],
+    ["感情価（平均）", hasNum(s.valence_mean) ? s.valence_mean : "–"],
+    ["注視率", pct(s.attention_ratio)],
+    ["身体関与", pct(s.body_engagement_mean)],
+    ["身体活動", pct(hasNum(s.pose_motion_mean) ? clamp(s.pose_motion_mean / 1.2, 0, 1) : null)],
+    ["手の動き", pct(hasNum(s.hand_activity_mean) ? clamp(s.hand_activity_mean / 1.2, 0, 1) : null)],
+    ["姿勢スコア", hasNum(s.posture_score_mean) ? Math.round(s.posture_score_mean) : "–"],
     ["うなずき/首振り", `${s.nod_count} / ${s.shake_count}`],
-    ["まばたき/分", s.blink_per_min],
-    ["エンゲージメント（平均）", s.engagement_mean != null ? Math.round(s.engagement_mean * 100) : "–"],
-    ["姿勢スコア（平均）", s.posture_score_mean != null ? Math.round(s.posture_score_mean) : "–"],
-    ["顔検出率", Math.round(s.face_detected_ratio * 100) + "%"],
   ];
 
   els.diagnosisBody.innerHTML =
@@ -1191,7 +1402,13 @@ const CORR_X_OPTIONS = [
   ["gaze_center_ratio", "視線中央率"],
   ["blink_per_min", "まばたき/分"],
   ["lean_in_mean", "前のめり度（平均）"],
+  ["body_lean_in_mean", "身体の前のめり度（平均）"],
   ["posture_score_mean", "姿勢スコア（平均）"],
+  ["body_engagement_mean", "身体関与（平均）"],
+  ["pose_motion_mean", "身体活動（平均）"],
+  ["hand_activity_mean", "手の動き（平均）"],
+  ["arm_openness_mean", "腕の広がり（平均）"],
+  ["torso_lean_deg_abs_mean", "体幹の傾き（平均）"],
   ["head_move_mean", "落ち着きのなさ（平均）"],
   ["nod_count", "うなずき回数"],
   ["shake_count", "首振り回数"],
