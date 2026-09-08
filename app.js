@@ -68,6 +68,7 @@ const els = {
   btnShare: $("btnShare"), btnSessionsShare: $("btnSessionsShare"),
   consentScreen: $("consentScreen"), consentCheck: $("consentCheck"),
   consentButton: $("consentButton"), appRoot: $("appRoot"),
+  consentCollector: $("consentCollector"), footerPrivacy: $("footerPrivacy"),
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -1108,14 +1109,16 @@ function showDiagnosis() {
 }
 
 // ---------- データ回収（Google Apps Script 連携） ----------
-// ★ 既定の回収設定：ここに GAS の URL を書いておくと、素のURLを開くだけで
-//   送信設定が有効になる（リンクにパラメータを付ける必要がなくなる）
+// 公開デプロイの既定は「未設定」。素のURLを開いただけでは送信しない。
+// 研究者が回収したいときは画面でURLを保存するか、設定込みリンク / QR を配布する。
+// （自前フォークで素のURLを回収有効にしたい場合のみ、下の url を埋める。
+//   その場合は同意文が自動で「送信する」側に切り替わる）
 const DEFAULT_COLLECTOR = {
-  label: "既定（管理者のシート）", // 画面の「送信先」表示に使う名前。自由に変更可
-  url: "https://script.google.com/macros/s/AKfycbwzLD2yFSh2K37sUJKZ6S4HPAAPJjwJA9vAYq9Imh7VgBKP3vMo7zGuBpPDnh-4AHrUgQ/exec",
+  label: "既定（管理者のシート）", // url を埋めたときだけ画面の「送信先」表示に使う
+  url: "",
   token: "",
-  autoSend: true,
-  sendTimeseries: true,
+  autoSend: false,
+  sendTimeseries: false,
 };
 
 // ★ 短縮コード：?c=名前 で切り替えられる送信先プリセット。
@@ -1125,9 +1128,18 @@ const COLLECTOR_PRESETS = {
 };
 
 const COLLECTOR_KEY = "reactionMeterCollector";
+// 以前の公開ビルドが素のURLでこの送信先＋自動送信を有効にしていた。
+// 明示的な設定込みリンクで開いた場合は下の readCollectorParams が再適用する。
+const RETIRED_DEFAULT_COLLECTOR_URL =
+  "https://script.google.com/macros/s/AKfycbwzLD2yFSh2K37sUJKZ6S4HPAAPJjwJA9vAYq9Imh7VgBKP3vMo7zGuBpPDnh-4AHrUgQ/exec";
 let collectorCfg = { ...DEFAULT_COLLECTOR };
 try {
-  collectorCfg = { ...collectorCfg, ...JSON.parse(localStorage.getItem(COLLECTOR_KEY) || "{}") };
+  const saved = JSON.parse(localStorage.getItem(COLLECTOR_KEY) || "null");
+  if (saved && saved.url === RETIRED_DEFAULT_COLLECTOR_URL) {
+    localStorage.removeItem(COLLECTOR_KEY);
+  } else if (saved && typeof saved === "object") {
+    collectorCfg = { ...collectorCfg, ...saved };
+  }
 } catch { /* 破損時は既定値のまま */ }
 
 // 調査ID：リンクの ?study=… で配布でき、全データに study_id 列として記録される
@@ -1188,6 +1200,35 @@ function collectorLabel() {
   return "カスタム（リンクで設定）";
 }
 
+function collectorWillAutoSend() {
+  return !!(collectorCfg.url && collectorCfg.autoSend);
+}
+
+function applyConsentCopy() {
+  const sending = collectorWillAutoSend();
+  const configured = !!collectorCfg.url;
+  if (els.consentCollector) {
+    els.consentCollector.classList.toggle("consent-sending", sending);
+    if (sending) {
+      els.consentCollector.innerHTML =
+        "📤 <strong>この画面ではデータ回収が有効です。</strong>セッション保存時に、上記の数値データのみが研究者のスプレッドシートへ送信されます（映像・画像は送信されません）。";
+    } else if (configured) {
+      els.consentCollector.innerHTML =
+        "📤 送信先は設定されていますが、自動送信はオフです。数値データはこの端末に保存され、明示的に送信しない限り研究者へ送られません（映像・画像は送信されません）。";
+    } else {
+      els.consentCollector.innerHTML =
+        "📤 <strong>データ回収は未設定です。</strong>数値データはこの端末にのみ保存され、研究者へ自動送信されることはありません。";
+    }
+  }
+  if (els.footerPrivacy) {
+    els.footerPrivacy.textContent = sending
+      ? "解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみで、設定された送信先へその数値のみが研究者のスプレッドシートに送信されます。"
+      : configured
+        ? "解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみです。送信先は設定されていますが自動送信はオフのため、明示的に送信しない限りデータは端末にのみ保存されます。"
+        : "解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみで、データ回収は未設定のためこの端末にのみ保存されます。";
+  }
+}
+
 function applyCollectorToUI() {
   els.inpCollectorUrl.value = collectorCfg.url;
   els.inpCollectorToken.value = collectorCfg.token;
@@ -1201,6 +1242,7 @@ function applyCollectorToUI() {
     ? `📮 送信先: ${label}${collectorCfg.autoSend ? "" : "（自動送信オフ）"}`
     : "📮 送信先: 未設定（データは端末にのみ保存）";
   els.destBadge.classList.toggle("configured", !!label);
+  applyConsentCopy();
 }
 
 function saveCollectorFromUI() {
