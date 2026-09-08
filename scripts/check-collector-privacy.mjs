@@ -38,6 +38,23 @@ if (html.includes("データ回収が設定されている場合、上記の数�
   fail("consent HTML still uses the old optional/config-dependent wording");
 }
 
+if (!app.includes("RETIRED_DEFAULT_COLLECTOR_URL")) {
+  fail("retired default URL wipe is missing");
+}
+if (!app.includes('autoSend: qs.get("auto") !== "0"')) {
+  fail("settings-link auto-send default (auto!==0) is missing");
+}
+if (!app.includes("if (collectorCfg.url && collectorCfg.autoSend)")) {
+  fail("session save must still require both destination and autoSend");
+}
+for (const phrase of [
+  "データ回収は未設定です",
+  "この画面ではデータ回収が有効です",
+  "自動送信はオフです",
+]) {
+  if (!app.includes(phrase)) fail(`applyConsentCopy is missing: ${phrase}`);
+}
+
 if (process.exitCode) {
   console.error("collector privacy checks failed");
   process.exit(1);
