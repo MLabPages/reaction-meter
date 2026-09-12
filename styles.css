@@ -46,6 +46,10 @@
   border-radius: 10px;
   padding: 10px 14px;
 }
+.consent-box li.consent-sending {
+  outline: 1px solid rgba(255, 184, 77, .55);
+  background: #2a2430;
+}
 .consent-check {
   display: flex;
   align-items: flex-start;

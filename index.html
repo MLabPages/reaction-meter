@@ -16,7 +16,7 @@
       <li>📷 <strong>映像・画像は保存も送信もしません。</strong>解析はすべてこの端末のブラウザ内で行われます。</li>
       <li>📊 記録されるのは、笑顔や姿勢などの数値、注視や視線のゾーン、まばたき回数といった特徴量のみです。</li>
       <li>🙂 これらは快・不快や感情を断定するものではなく、探索的な参考指標として扱います。</li>
-      <li>📤 データ回収が設定されている場合、上記の数値データのみが研究者へ送信されます。</li>
+      <li id="consentCollector">📤 <strong>データ回収は未設定です。</strong>数値データはこの端末にのみ保存され、研究者へ自動送信されることはありません。</li>
       <li>🛑 参加は任意で、いつでも中止できます（画面を閉じれば計測は止まります）。</li>
     </ul>
     <label class="consent-check">
@@ -189,7 +189,7 @@
 
 <!-- 記録コントロール -->
 <section class="panel record-panel">
-  <div class="dest-badge" id="destBadge">📮 送信先: –</div>
+  <div class="dest-badge" id="destBadge">📮 送信先: 未設定（データは端末にのみ保存）</div>
   <div class="record-inputs">
     <label>調査ID <input type="text" id="inpStudy" placeholder="例 2026A"></label>
     <label>参加者ID <input type="text" id="inpParticipant" placeholder="P01"></label>
@@ -216,7 +216,7 @@
   <details id="collectorDetails">
     <summary>📤 データ回収設定 <span id="collectorState" class="collector-state">未設定</span></summary>
     <p class="small-note">
-      Google Apps Script の回収用WebアプリのURL（作り方は<a href="https://github.com/MLabPages/reaction-meter#readme" target="_blank" rel="noopener">README</a>参照）を設定すると、セッション保存時に数値データが研究者のGoogleスプレッドシートへ自動送信されます。協力者の端末にCSVを残す必要がなくなります。<strong>映像が送信されることはありません。</strong>
+      Google Apps Script の回収用WebアプリのURL（作り方は<a href="https://github.com/MLabPages/reaction-meter#readme" target="_blank" rel="noopener">README</a>参照）を入れて「設定を保存」し、自動送信にチェックすると、セッション保存時に数値データが研究者のGoogleスプレッドシートへ送られます。協力者へは「設定込みリンク」またはQRを渡してください。素のURLだけでは送信されません。<strong>映像が送信されることはありません。</strong>
     </p>
     <div class="collector-inputs">
       <label>送信先URL
@@ -227,7 +227,7 @@
       </label>
     </div>
     <div class="collector-opts">
-      <label class="toggle"><input type="checkbox" id="chkAutoSend" checked> セッション保存時に自動送信</label>
+      <label class="toggle"><input type="checkbox" id="chkAutoSend"> セッション保存時に自動送信</label>
       <label class="toggle"><input type="checkbox" id="chkSendTs"> 時系列データも送信（データ量が多くなります）</label>
     </div>
     <div class="record-buttons">
@@ -279,7 +279,7 @@
 </section>
 
 <footer>
-  <p>解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみで、データ回収が設定されている場合はその数値のみが研究者のスプレッドシートに送信されます。</p>
+  <p id="footerPrivacy">解析はすべてブラウザ内（MediaPipe）で実行されます。映像・画像は保存も外部送信もされません。記録されるのは数値特徴量のみで、データ回収は未設定のためこの端末にのみ保存されます。</p>
 </footer>
 </div><!-- /#appRoot -->
 
