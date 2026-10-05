@@ -175,6 +175,34 @@ video, #overlay {
   font-weight: bold;
 }
 
+.camera-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+}
+.camera-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 200px;
+  min-width: 0;
+  font-size: .8rem;
+  color: var(--muted);
+}
+.camera-controls select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+}
+.camera-controls select:disabled { opacity: .55; }
+
 .video-controls {
   display: flex;
   flex-wrap: wrap;

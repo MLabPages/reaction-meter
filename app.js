@@ -25,6 +25,8 @@ const els = {
   placeholder: $("videoPlaceholder"), recBadge: $("recBadge"), recTime: $("recTime"),
   calibBadge: $("calibBadge"), status: $("status"),
   btnCamera: $("btnCamera"), btnFacing: $("btnFacing"),
+  cameraSelect: $("cameraSelect"), btnRefreshCameras: $("btnRefreshCameras"),
+  cameraStatus: $("cameraStatus"),
   chkOverlay: $("chkOverlay"), chkMirror: $("chkMirror"),
   btnRecord: $("btnRecord"), btnMark: $("btnMark"),
   btnCsv: $("btnCsv"), btnSummaryCsv: $("btnSummaryCsv"),
@@ -89,6 +91,8 @@ let poseLandmarker = null;
 let stream = null;
 let facing = "user";
 let running = false;
+let cameraBusy = false;
+let consentAccepted = false;
 let rafId = null;
 let lastPoseAt = 0;
 let lastPoseResult = null;
@@ -183,14 +187,85 @@ async function loadModels() {
 }
 
 // ---------- カメラ ----------
+function updateCameraControls() {
+  const available = consentAccepted && !!navigator.mediaDevices?.getUserMedia;
+  els.btnCamera.disabled = !available || cameraBusy;
+  els.cameraSelect.disabled = !available || cameraBusy || running;
+  els.btnRefreshCameras.disabled = !available || cameraBusy || running ||
+    !navigator.mediaDevices?.enumerateDevices;
+  els.btnFacing.disabled = !running || cameraBusy;
+  els.btnRecord.disabled = !running || cameraBusy;
+}
+
+function cameraConstraints(deviceId = els.cameraSelect.value) {
+  return {
+    video: {
+      ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: facing }),
+      width: { ideal: 960 }, height: { ideal: 720 },
+    },
+    audio: false,
+  };
+}
+
+function renderCameraDevices(devices) {
+  const activeId = stream?.getVideoTracks()[0]?.getSettings().deviceId;
+  const selectedId = activeId || els.cameraSelect.value;
+  const cameras = devices.filter((d) => d.kind === "videoinput" && d.deviceId);
+  els.cameraSelect.replaceChildren(new Option("自動（前面 / 背面の設定に従う）", ""));
+  cameras.forEach((camera, i) =>
+    els.cameraSelect.add(new Option(camera.label || `カメラ ${i + 1}`, camera.deviceId)));
+  const selected = cameras.find((d) => d.deviceId === selectedId);
+  els.cameraSelect.value = selected ? selectedId : "";
+  if (selectedId && !selected) {
+    els.cameraStatus.textContent = "選択したカメラが見つかりません。接続を確認して、使用するカメラを選び直してください。";
+  } else if (running && selected) {
+    els.cameraStatus.textContent = `使用中: ${selected.label || "選択したカメラ"}。別のカメラを選ぶときは、いったん停止してください。`;
+  } else {
+    els.cameraStatus.textContent = cameras.length
+      ? "カメラを選んで「カメラ開始」を押してください。名前が表示されない場合は「カメラ一覧を更新」で使用を許可してください。"
+      : "カメラ名が表示されない場合は「カメラ一覧を更新」で使用を許可してください。";
+  }
+}
+
+async function refreshCameraDevices(requestPermission = false) {
+  if (!consentAccepted || cameraBusy || running || !navigator.mediaDevices?.enumerateDevices) return;
+  cameraBusy = true;
+  updateCameraControls();
+  let temporaryStream = null;
+  try {
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    if (requestPermission && !devices.some((d) => d.kind === "videoinput" && d.deviceId && d.label)) {
+      temporaryStream = await navigator.mediaDevices.getUserMedia(cameraConstraints(""));
+      devices = await navigator.mediaDevices.enumerateDevices();
+    }
+    renderCameraDevices(devices);
+  } catch (err) {
+    els.cameraStatus.textContent = err.name === "NotAllowedError"
+      ? "カメラの使用が許可されませんでした。ブラウザの設定で許可してから、一覧を更新してください。"
+      : `カメラ一覧を取得できませんでした。接続を確認して再度更新してください: ${err.message}`;
+  } finally {
+    temporaryStream?.getTracks().forEach((t) => t.stop());
+    cameraBusy = false;
+    updateCameraControls();
+  }
+}
+
+async function updateActiveCameraDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    renderCameraDevices(await navigator.mediaDevices.enumerateDevices());
+  } catch {
+    els.cameraStatus.textContent = "カメラ一覧を取得できませんでした。カメラを停止してから一覧を更新してください。";
+  }
+}
+
 async function startCamera() {
-  els.btnCamera.disabled = true;
+  if (!consentAccepted || cameraBusy || running) return;
+  cameraBusy = true;
+  updateCameraControls();
   try {
     if (!faceLandmarker) await loadModels();
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: { ideal: 960 }, height: { ideal: 720 } },
-      audio: false,
-    });
+    stream = await navigator.mediaDevices.getUserMedia(cameraConstraints());
     els.video.srcObject = stream;
     await new Promise((res) => (els.video.onloadedmetadata = res));
     await els.video.play();
@@ -200,21 +275,22 @@ async function startCamera() {
     running = true;
     els.btnCamera.textContent = "カメラ停止";
     els.btnCamera.classList.remove("primary");
-    els.btnFacing.disabled = false;
-    els.btnRecord.disabled = false;
+    await updateActiveCameraDevices();
     setStatus("計測中（記録はまだ開始されていません）");
     loop();
   } catch (err) {
     console.error(err);
+    stopCamera();
     if (err.name === "NotAllowedError") {
       setStatus("カメラの使用が許可されませんでした。ブラウザの設定でカメラを許可してください。", true);
-    } else if (err.name === "NotFoundError") {
-      setStatus("カメラが見つかりませんでした。", true);
+    } else if (err.name === "NotFoundError" || err.name === "OverconstrainedError") {
+      setStatus("選択したカメラが見つからないか使用できません。接続を確認し、カメラ一覧を更新して選び直してください。", true);
     } else {
       setStatus(`カメラ/モデルの初期化に失敗しました: ${err.message}`, true);
     }
   } finally {
-    els.btnCamera.disabled = false;
+    cameraBusy = false;
+    updateCameraControls();
   }
 }
 
@@ -230,33 +306,46 @@ function stopCamera() {
   els.placeholder.classList.remove("hidden");
   els.btnCamera.textContent = "カメラ開始";
   els.btnCamera.classList.add("primary");
-  els.btnFacing.disabled = true;
-  els.btnRecord.disabled = true;
+  updateCameraControls();
+  els.cameraStatus.textContent = "カメラを選んで「カメラ開始」を押してください。";
   const ctx = els.overlay.getContext("2d");
   ctx.clearRect(0, 0, els.overlay.width, els.overlay.height);
   setStatus("カメラ停止中");
 }
 
 async function switchFacing() {
+  if (cameraBusy || !running) return;
+  cameraBusy = true;
+  updateCameraControls();
   facing = facing === "user" ? "environment" : "user";
   els.chkMirror.checked = facing === "user";
   applyMirror();
   if (running) {
     // ストリームだけ差し替える（記録は継続。ただし基準値はリセット）
+    running = false;
+    if (rafId) cancelAnimationFrame(rafId);
     stream.getTracks().forEach((t) => t.stop());
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing, width: { ideal: 960 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      // 前面 / 背面ボタンでは一覧の選択より facingMode を優先する。
+      stream = await navigator.mediaDevices.getUserMedia(cameraConstraints(""));
       els.video.srcObject = stream;
       await els.video.play();
       els.overlay.width = els.video.videoWidth;
       els.overlay.height = els.video.videoHeight;
       baseline = null;
+      lastPoseResult = null;
+      prevPoseFrame = null;
+      prevNose = null;
+      running = true;
+      await updateActiveCameraDevices();
+      loop();
       setStatus(facing === "user" ? "前面カメラに切替えました" : "背面カメラに切替えました");
     } catch (err) {
+      stopCamera();
       setStatus(`カメラ切替に失敗しました: ${err.message}`, true);
+    } finally {
+      cameraBusy = false;
+      updateCameraControls();
     }
   }
 }
@@ -1660,6 +1749,13 @@ els.btnCamera.addEventListener("click", () => (running ? stopCamera() : startCam
 els.chkDetails.addEventListener("change", () =>
   els.detailsSection.classList.toggle("hidden", !els.chkDetails.checked));
 els.btnFacing.addEventListener("click", switchFacing);
+els.btnRefreshCameras.addEventListener("click", () => refreshCameraDevices(true));
+if (navigator.mediaDevices?.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => {
+    if (running && !cameraBusy) updateActiveCameraDevices();
+    else refreshCameraDevices();
+  });
+}
 els.chkMirror.addEventListener("change", applyMirror);
 els.btnRecord.addEventListener("click", () => (recording ? stopRecording() : startRecording()));
 els.btnMark.addEventListener("click", addMarker);
@@ -1727,6 +1823,7 @@ initCorrControls();
 renderSessions();
 applyCollectorToUI();
 applyMirror();
+updateCameraControls();
 if (!navigator.mediaDevices?.getUserMedia) {
   setStatus("このブラウザはカメラAPIに対応していません。HTTPS（または localhost）でアクセスしているか確認してください。", true);
 }
@@ -1740,5 +1837,8 @@ els.consentButton.addEventListener("click", () => {
   if (!els.consentCheck.checked) return;
   els.consentScreen.classList.add("hidden");
   els.appRoot.classList.remove("hidden");
+  consentAccepted = true;
+  updateCameraControls();
+  refreshCameraDevices();
   window.scrollTo(0, 0);
 });

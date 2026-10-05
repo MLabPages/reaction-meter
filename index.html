@@ -52,6 +52,15 @@
       <div id="recBadge" class="rec-badge hidden">● REC <span id="recTime">00:00</span></div>
       <div id="calibBadge" class="calib-badge hidden">基準値を計測中…</div>
     </div>
+    <div class="camera-controls">
+      <label for="cameraSelect">使用するカメラ
+        <select id="cameraSelect" aria-describedby="cameraStatus" disabled>
+          <option value="">自動（前面カメラを優先）</option>
+        </select>
+      </label>
+      <button id="btnRefreshCameras" class="btn" disabled>カメラ一覧を更新</button>
+    </div>
+    <p id="cameraStatus" class="status" role="status">カメラ名が表示されない場合は「カメラ一覧を更新」で使用を許可してください。別のカメラを選ぶときは、いったんカメラを停止してください。</p>
     <div class="video-controls">
       <button id="btnCamera" class="btn primary">カメラ開始</button>
       <button id="btnFacing" class="btn" disabled>🔄 前面 / 背面</button>
